@@ -24,19 +24,19 @@ NAME="$2"
 
 log_event() {
   local type="$1" msg="$2"
-  [ -n "$DB" ] && [ -f "$DB" ] || return 0
+  [ -f "$DB" ] || return 0
   NOW=$(date +%s)
-  MSG=$(echo "$msg" | sed "s/'/''/g")
-  NM=$(echo "$NAME" | sed "s/'/''/g")
-  PUB=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT publisher FROM app_meta WHERE name='$NM' LIMIT 1;" 2>/dev/null | head -1)
-  [ -z "$PUB" ] && PUB="Unknown"
-  printf "INSERT INTO events (ts, type, app, publisher, msg, read) VALUES ($NOW, '%s', '%s', '%s', '%s', 0);\n" \
-    "$type" "$NM" "${PUB}" "$MSG" | sqlite3 -cmd ".timeout 1500" "$DB" 2>/dev/null
+  # Publisher is resolved from app_meta inside sql-ins.py (bound params).
+  printf 'event\t%s\t%s\t%s\t\t%s\t0\n' "$NOW" "$type" "$NAME" "$msg" \
+    | OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" 2>/dev/null
 }
 
+# Read-modify-write of rules.json, serialized with flock (a double-click or a
+# GUI action racing enforce.sh/poll would otherwise clobber a concurrent write)
+# and written atomically (tmp + rename).
 rules_set_state() {
-  # add/remove an app-wide disable rule in rules.json
-  python3 - "$RULES_FILE" "$NAME" "$1" <<'PY'
+  { flock 9 || return 1
+    python3 - "$RULES_FILE" "$NAME" "$1" <<'PY'
 import json, os, sys
 path, name, on = sys.argv[1], sys.argv[2], sys.argv[3] == "on"
 try:
@@ -51,10 +51,13 @@ if on:
     rules.append({"kind": "app", "pattern": name, "name": name, "action": "disable", "enabled": True})
 data["rules"] = rules
 os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-with open(path, "w") as f:
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
     json.dump(data, f, indent=2)
+os.replace(tmp, path)
 print("ok")
 PY
+  } 9>"$RULES_FILE.lock"
 }
 
 case "$ACTION" in

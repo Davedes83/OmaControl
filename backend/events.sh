@@ -16,6 +16,9 @@ if [ "$ACTION" = "list" ]; then
 elif [ "$ACTION" = "unread" ]; then
   sqlite3 -cmd ".timeout 3000" "$DB" "SELECT count(*) FROM events WHERE read=0;" 2>/dev/null
 elif [ "$ACTION" = "read" ]; then
+  case "$2" in
+    ''|*[!0-9]*) echo "usage: events.sh read <integer id>" >&2; exit 1 ;;
+  esac
   sqlite3 -cmd ".timeout 3000" "$DB" "UPDATE events SET read=1 WHERE id=$2;" 2>/dev/null
   echo ok
 elif [ "$ACTION" = "read-all" ]; then

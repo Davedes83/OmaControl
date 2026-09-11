@@ -20,18 +20,19 @@ fi
 KILLED=""
 ERRORS=""
 
+# Rows accumulate here and are flushed to sql-ins.py once, after the loop.
+LFILE=$(mktemp /tmp/omc_lblock.XXXXXX)
+
 log_block() {
   pid="$1"; name="$2"; pattern="$3"
-  NM=$(echo "$name" | sed "s/'/''/g")
-  PT=$(echo "$pattern" | sed "s/'/''/g")
-  printf "INSERT INTO events (ts, type, app, publisher, msg, read) VALUES ($NOW, 'publisher_block', '%s', 'OmaControl', 'Blocked forbidden app: %s (%s)', 0);\n" \
-    "$NM" "$NM" "$PT" | sqlite3 -cmd ".timeout 1500" "$DB" 2>/dev/null
+  printf 'event\t%s\tpublisher_block\t%s\tOmaControl\tBlocked forbidden app: %s (%s)\t0\n' \
+    "$NOW" "$name" "$name" "$pattern" >> "$LFILE"
 }
 
 TMP=$(mktemp /tmp/omc_rules.XXXXXX)
 KFILE=$(mktemp /tmp/omc_killed.XXXXXX)
 EFILE=$(mktemp /tmp/omc_errors.XXXXXX)
-trap 'rm -f "$TMP" "$KFILE" "$EFILE"' EXIT INT TERM
+trap 'rm -f "$TMP" "$KFILE" "$EFILE" "$LFILE"' EXIT INT TERM
 
 python3 - "$RULES_FILE" > "$TMP" <<'PY'
 import json, sys
@@ -93,6 +94,11 @@ grep -v '^$' "$TMP" | sed 's/\r$//' | while IFS='|' read -r kind action pattern;
     fi
   done
 done
+
+# Flush audit rows through the parameterized writer (one transaction).
+if [ -s "$LFILE" ]; then
+  OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" < "$LFILE" 2>/dev/null
+fi
 KILLED_LIST="$(paste -sd, "$KFILE" 2>/dev/null)"
 ERRORS_LIST="$(paste -sd, "$EFILE" 2>/dev/null)"
 cat <<ENDJSON

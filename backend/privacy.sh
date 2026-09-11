@@ -59,23 +59,23 @@ fi
 
 # --- Diff against previous state to log start/stop events ---
 sort -u "$TMP" > "$TMP.sorted"
-if [ -f "$STATE" ]; then
-  # Each line in state file is "device|pid|name"
-  sort -u "$STATE" > "$TMP.prev"
-  sq() {
-    printf '%s' "$1" | sed "s/'/''/g"
-  }
-  # Newly appeared lines
-  comm -23 "$TMP.sorted" "$TMP.prev" | while IFS='|' read -r dev pid name; do
-    sqlite3 -cmd ".timeout 1500" "$DB" "INSERT INTO privacy_events (ts,action,device,name,pid) VALUES ($NOW,'start','$(sq "$dev")','$(sq "$name")',$pid);" 2>/dev/null
-  done
-  # Lines that disappeared
-  comm -13 "$TMP.sorted" "$TMP.prev" | while IFS='|' read -r dev pid name; do
-    sqlite3 -cmd ".timeout 1500" "$DB" "INSERT INTO privacy_events (ts,action,device,name,pid) VALUES ($NOW,'stop','$(sq "$dev")','$(sq "$name")',$pid);" 2>/dev/null
-  done
-else
+if [ ! -f "$STATE" ]; then
   # First run: seed state, don't log spurious "start" for pre-existing access
   :
+else
+  # Each line in state file is "device|pid|name"
+  sort -u "$STATE" > "$TMP.prev"
+fi
+# Accumulate start/stop rows and flush through the parameterized writer in one
+# transaction (bound params — device/app names were quoted with sed before).
+if [ -f "$TMP.prev" ]; then
+  { comm -23 "$TMP.sorted" "$TMP.prev" | while IFS='|' read -r dev pid name; do
+      printf 'privacy\t%s\tstart\t%s\t%s\t%s\n' "$NOW" "$dev" "$name" "$pid"
+    done
+    comm -13 "$TMP.sorted" "$TMP.prev" | while IFS='|' read -r dev pid name; do
+      printf 'privacy\t%s\tstop\t%s\t%s\t%s\n' "$NOW" "$dev" "$name" "$pid"
+    done
+  } | OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" 2>/dev/null
 fi
 sort -u "$TMP.sorted" > "$STATE"
 rm -f "$TMP" "$TMP.sorted" "$TMP.prev"

@@ -455,13 +455,9 @@ if [ "$PROC_MIN" -gt "$LAST_PROCMIN" ]; then
     while IFS= read -r nm; do
       [ -z "$nm" ] && continue
       grep -qx "$nm" "$DATA_DIR/.cur_names_min.$$" && continue
-      PUB=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT publisher||'|'||pkg FROM app_meta WHERE name='${nm%$'\r'}' COLLATE BINARY;" 2>/dev/null | head -1)
-      PUB=$(echo "$PUB" | tr -d '\r')
-      if [ -n "$PUB" ] && [ "$PUB" != "Unknown|" ]; then
-        printf "INSERT INTO events (ts, type, app, publisher, msg) VALUES ($PROC_TS, 'app_exit', '%s', '%s', 'App closed: %s');\n" \
-          "${nm}" "${PUB%%|*}" "${nm}" | sqlite3 -cmd ".timeout 1500" "$DB" 2>/dev/null
-      fi
-    done < "$DATA_DIR/.last_names_min"
+      nm=$(printf '%s' "$nm" | tr -d '\r')
+      printf 'event\t%s\tapp_exit\t%s\t\tApp closed: %s\t1\n' "$PROC_TS" "$nm" "$nm"
+    done < "$DATA_DIR/.last_names_min" | OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" 2>/dev/null
   fi
   mv "$DATA_DIR/.cur_names_min.$$" "$DATA_DIR/.last_names_min"
   echo "$PROC_MIN" > "$DATA_DIR/.omc_proc_min"
@@ -499,16 +495,11 @@ if [ -s "$DATA_DIR/.promote.$$" ]; then
   while IFS= read -r nm; do
     nm=$(echo "$nm" | tr -d '\r')
     echo "$NOW $nm" >> "$NEWAPPS_LOG"
-    PUB=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT publisher, pkg, verified FROM app_meta WHERE name='$(echo "$nm" | sed "s/'/''/g")';" 2>/dev/null | head -1 | tr '|' $'\n' | tr -d '\r')
-    set -- $PUB
-    publisher="${1:-Unknown}"
-    [ -z "$publisher" ] && publisher="Unknown"
-    printf "INSERT INTO events (ts, type, app, publisher, msg, read) VALUES ($NOW, 'app_launch', '%s', '%s', 'App started: %s', 0);\n" \
-      "${nm}" "${publisher}" "${nm}" | sqlite3 -cmd ".timeout 1500" "$DB" 2>/dev/null
+    printf 'event\t%s\tapp_launch\t%s\t\tApp started: %s\t0\n' "$NOW" "$nm" "$nm"
     if [ "$ALERTS_ENABLED" = "1" ] && [ "$(pref_on 'New App Launch')" = "1" ]; then
       notify-send -a OmaControl "New app launched" "$nm" 2>/dev/null
     fi
-  done < "$DATA_DIR/.promote.$$"
+  done < "$DATA_DIR/.promote.$$" | OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" 2>/dev/null
   cat "$DATA_DIR/.promote.$$" >> "$SEEN_FILE"
 fi
 
