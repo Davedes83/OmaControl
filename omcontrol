@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# OmControl CLI — query the historical task-manager database.
+#
+#   omcontrol status                 current sample + store summary
+#   omcontrol top [--history R] [--limit N]         busiest apps over last R
+#   omcontrol top --from TS --to TS                 ... between timestamps
+#   omcontrol history [--metric M] [--seconds S] [--raw]   downsampled series
+#   omcontrol history --from TS --to TS             ... between  timestamps
+#   omcontrol procs-at TS           process snapshot nearest to timestamp
+#   omcontrol rules                 list enforcement rules
+#   omcontrol rules add <name>      add a persistent disable rule (app)
+#   omcontrol rules rm <name>       remove a disable rule
+#   omcontrol events [--limit N]    recent persistent events
+#   omcontrol events read-all|clear
+#   omcontrol alert-prefs get        show current alert notification preferences
+#   omcontrol alert-prefs set <type> on|off   toggle a specific alert type
+#   omcontrol alert-prefs set-enabled on|off  globally enable/disable alerts
+#
+# R accepts 5m/30m/1h/6h/24h/3d. M = cpu|mem|gpu|gtemp|ctemp. TS = epoch seconds.
+
+set -u
+DB="${OMCONTROL_DB:-$HOME/.local/share/omcontrol/history.db}"
+SNIPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+  sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^#   //; /^$/d'
+  exit 0
+}
+
+parse_range() {
+  local v="$1"
+  case "$v" in
+    5m) echo 300 ;;
+    10m) echo 600 ;;
+    30m) echo 1800 ;;
+    1h) echo 3600 ;;
+    6h) echo 21600 ;;
+    24h) echo 86400 ;;
+    3d) echo 259200 ;;
+    *[0-9]) echo "$v" ;;
+    *) echo 3600 ;;
+  esac
+}
+
+require_db() {
+  if [ ! -f "$DB" ]; then
+    echo "No history database at $DB (collect some samples first)" >&2
+    exit 1
+  fi
+}
+
+do_status() {
+  require_db
+  local out
+  out=$(sqlite3 -cmd ".timeout 1500" "$DB" "
+    SELECT ts, cpu_pct, mem_used_mb, mem_total_mb, gpu_pct, gpu_temp, cpu_temp, proc_count,
+           (SELECT count(*) FROM metrics),
+           (SELECT count(*) FROM proc_history),
+           (SELECT min(ts) FROM metrics)
+    FROM metrics ORDER BY ts DESC LIMIT 1;") || exit 1
+  local ts cpu mem memtot gpu gtemp ctemp procs nsamples nsnaps oldest
+  IFS='|' read -r ts cpu mem memtot gpu gtemp ctemp procs nsamples nsnaps oldest <<< "$out"
+  printf 'time:        %s\n' "$(date -d "@$ts" '+%F %T')"
+  printf 'cpu:         %s%%\n' "$cpu"
+  printf 'memory:      %s / %s MB\n' "$mem" "$memtot"
+  printf 'gpu:         %s%%\n' "$gpu"
+  printf 'gpu temp:    %s C\n' "$gtemp"
+  printf 'cpu temp:    %s C\n' "$ctemp"
+  printf 'processes:   %s\n' "$procs"
+  printf 'recorded:    %s samples, %s per-app snapshots\n' "$nsamples" "$nsnaps"
+  printf 'oldest kept: %s\n' "$(date -d "@$oldest" '+%F %T')"
+}
+
+do_top() {
+  require_db
+  local range=3600 limit=20 from= to=
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --history) shift; range=$(parse_range "$1") ;;
+      --limit) shift; limit="$1" ;;
+      --from) shift; from="$1" ;;
+      --to) shift; to="$1" ;;
+      *) shift ;;
+    esac
+  done
+  if [ -z "$from" ]; then
+    local now; now=$(date +%s)
+    from=$((now - range)); to=$now
+  fi
+  OMCONTROL_DB="$DB" python3 - "$from" "$to" "$limit" <<'PY'
+import json, os, sqlite3, sys
+db = os.environ["OMCONTROL_DB"]
+frm, to, limit = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+rows = con.execute(
+    "SELECT ts, procs FROM proc_history WHERE ts>=? AND ts<=? ORDER BY ts",
+    (frm, to)).fetchall()
+agg = {}
+for ts, payload in rows:
+    try:
+        arr = json.loads(payload)
+    except Exception:
+        continue
+    i = 0
+    while i < len(arr):
+        o = arr[i]
+        if isinstance(o, str) and i + 1 < len(arr) and isinstance(arr[i + 1], dict):
+            o = arr[i + 1]
+        if isinstance(o, dict):
+            name = o.get("name", "?")
+            cpu = float(o.get("cpu", 0) or 0)
+            mem = float(o.get("mem", 0) or 0)
+            a = agg.get(name)
+            if a is None:
+                a = [0, 0.0, 0.0, 0.0]
+                agg[name] = a
+            a[0] += 1
+            a[1] += cpu
+            a[2] = max(a[2], cpu)
+            a[3] += mem
+        i += 1
+out = sorted(agg.items(), key=lambda kv: -kv[1][2])
+print(f"{'NAME':<28} {'AVG%':>7} {'PEAK%':>7} {'AVG %MEM':>9}  SNAPS")
+for name, (snaps, tot, peak, mem) in out[:limit]:
+    print(f"{name[:28]:<28} {tot/snaps:7.1f} {peak:7.1f} {mem/snaps:9.1f}  {snaps}")
+if not out:
+    print("No per-app snapshots recorded in that range (proc_history is empty).")
+PY
+}
+
+do_history() {
+  require_db
+  local metric=cpu seconds=3600 raw=0 from= to=
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --metric) shift; metric="$1" ;;
+      --seconds) shift; seconds="$1" ;;
+      --raw) shift; raw=1 ;;
+      --from) shift; from="$1" ;;
+      --to) shift; to="$1" ;;
+      *) shift ;;
+    esac
+  done
+  case "$metric" in
+    cpu) col="avg(cpu_pct)" ;;
+    mem) col="avg(mem_used_mb)" ;;
+    gpu) col="avg(gpu_pct)" ;;
+    gtemp) col="avg(gpu_temp)" ;;
+    ctemp) col="avg(cpu_temp)" ;;
+    *) echo "unknown metric '$metric' (cpu|mem|gpu|gtemp|ctemp)" >&2; exit 1 ;;
+  esac
+  if [ -n "$from" ] && [ -n "$to" ]; then
+    t0=$from; t1=$to
+  else
+    local now; now=$(date +%s)
+    t0=$((now - seconds)); t1=$now
+  fi
+  local bin=$((seconds / 120)); [ "$bin" -lt 60 ] && bin=60
+  if [ "$raw" -eq 1 ]; then
+    sqlite3 -cmd ".timeout 1500" "$DB" "
+      SELECT ts, round(v, 1) FROM
+        (SELECT (ts/$bin)*$bin ts, $col AS v FROM metrics WHERE ts > $t0 AND ts <= $t1 GROUP BY ts/$bin ORDER BY ts);"
+  else
+    sqlite3 -cmd ".timeout 1500" "$DB" "
+      SELECT ts, round(v, 1) FROM
+        (SELECT (ts/$bin)*$bin ts, $col AS v FROM metrics WHERE ts > $t0 AND ts <= $t1 GROUP BY ts/$bin ORDER BY ts);" \
+      | while IFS='|' read -r ts v; do
+          printf '%s  %s\n' "$(date -d "@$ts" '+%H:%M')" "$v"
+        done
+  fi
+}
+
+do_procs_at() {
+  require_db
+  [ $# -ge 1 ] || { echo "usage: omcontrol procs-at <epoch_ts>" >&2; exit 1; }
+  "$SNIPS_DIR/backend/procs-at.sh" "$1"
+}
+
+do_alert_prefs() {
+  local sub="${1:-get}" type="${2:-}" value="${3:-}"
+  case "$sub" in
+    get) cat "${OMCONTROL_ALERT_PREFS:-$HOME/.local/share/omcontrol/alert_prefs.json}" ;;
+    set)
+      [ -n "$type" ] && [ -n "$value" ] || { echo "usage: omcontrol alert-prefs set <type> on|off" >&2; exit 1; }
+      "$SNIPS_DIR/backend/alert-prefs.sh" set "$type" "$value"
+      ;;
+    set-enabled)
+      [ -n "$type" ] || { echo "usage: omcontrol alert-prefs set-enabled on|off" >&2; exit 1; }
+      "$SNIPS_DIR/backend/alert-prefs.sh" set-enabled "$type"
+      ;;
+    *) echo "usage: omcontrol alert-prefs <get|set TYPE on|off|set-enabled on|off>" >&2; exit 1 ;;
+  esac
+}
+
+do_rules() {
+  local rules="${OMCONTROL_RULES:-$HOME/.local/share/omcontrol/rules.json}"
+  local sub="${1:-ls}"
+  if [ "$sub" = "add" ] || [ "$sub" = "rm" ]; then
+    local name="${2:-}"
+    [ -n "$name" ] || { echo "usage: omcontrol rules add|rm <name>" >&2; exit 1; }
+    local on=off
+    [ "$sub" = "add" ] && on=on
+    "$SNIPS_DIR/backend/app-action.sh" "$([ "$on" = "on" ] && echo disable || echo enable)" "$name" >/dev/null 2>&1
+    echo "rules: $name -> $([ "$on" = "on" ] && echo disabled || echo enabled)"
+    exit 0
+  fi
+  if [ ! -f "$rules" ]; then
+    echo 'No rules file yet.'; exit 0
+  fi
+  python3 - "$rules" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+rules = data.get("rules", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+if not rules:
+    print("No rules.")
+for r in rules:
+    status = "ON " if r.get("enabled") else "off"
+    print(f"{status}  {r.get('action','?')!s:<8} kind={r.get('kind','app')!s:<7} pattern={r.get('pattern','')!r}  name={r.get('name','')!r}")
+PY
+}
+
+do_events() {
+  local sub="${1:-list}" limit=120
+  if [ "$sub" = "--limit" ]; then limit="${2:-120}"; sub=list; fi
+  case "$sub" in
+    list)
+      "$SNIPS_DIR/backend/events.sh" list --limit "$limit" \
+        | python3 -c 'import json,sys
+try:
+ d=json.load(sys.stdin)
+except Exception:
+ d=[]
+for e in d:
+ print("  [%s] %s %s | %-40s | %s" % ("*" if not e.get("read") else " ", e.get("type","?"), __import__("time").strftime("%m-%d %H:%M", __import__("time").localtime(e.get("ts",0))), (e.get("app") or "")[:40], (e.get("msg") or "")[:60]))
+if not d: print("No events yet.")
+'
+      ;;
+    read-all) "$SNIPS_DIR/backend/events.sh" read-all ;;
+    clear) "$SNIPS_DIR/backend/events.sh" clear ;;
+    *) echo "usage: omcontrol events <list|read-all|clear>" >&2; exit 1 ;;
+  esac
+}
+
+# Open/close the standalone app window through the Omarchy shell's IPC.
+shell_pid() {
+  pgrep -f "quickshell -n -p /usr/share/omarchy/shell" | head -1
+}
+
+do_app() {
+  local action="${1:-toggle}"
+  local pid
+  pid=$(shell_pid)
+  [ -n "$pid" ] || { echo "omarchy shell not running" >&2; exit 1; }
+  case "$action" in
+    open) qs ipc --pid "$pid" call davedes.omcontrol openApp ;;
+    close) qs ipc --pid "$pid" call davedes.omcontrol closeApp ;;
+    toggle) qs ipc --pid "$pid" call davedes.omcontrol toggleApp ;;
+    tab) qs ipc --pid "$pid" call davedes.omcontrol setAppTab "${2:-0}" ;;
+    disable|kill|killall|stop|cont|fast|slow) "$SNIPS_DIR/backend/app-action.sh" "$action" "${2:-}" ;;
+    enable) "$SNIPS_DIR/backend/app-action.sh" enable "${2:-}" ;;
+    *) echo "usage: omcontrol app <open|close|toggle|tab INDEX|ACTION NAME>" >&2; exit 1 ;;
+  esac
+}
+
+cmd="${1:-}"
+[ "$cmd" = "--help" ] || [ "$cmd" = "-h" ] || [ "$cmd" = "help" ] && usage
+shift || true
+
+case "$cmd" in
+  status) do_status ;;
+  top) do_top "$@" ;;
+  history) do_history "$@" ;;
+  procs-at) do_procs_at "$@" ;;
+  rules) do_rules "$@" ;;
+  events) do_events "$@" ;;
+  alert-prefs) do_alert_prefs "$@" ;;
+  app) do_app "$@" ;;
+  "") usage ;;
+  *) echo "unknown command: $cmd" >&2; usage ;;
+esac
