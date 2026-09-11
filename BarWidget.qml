@@ -202,7 +202,7 @@ BarWidget {
 
   Process {
     id: collectProc
-    command: ["sh", "-c", "sh " + Qt.resolvedUrl("backend/collect.sh").toString().replace("file://", "")]
+    command: ["sh", Qt.resolvedUrl("backend/collect.sh").toString().replace("file://", "")]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -221,7 +221,7 @@ BarWidget {
 
   Process {
     id: enforceProc
-    command: ["sh", "-c", "sh " + Qt.resolvedUrl("backend/enforce.sh").toString().replace("file://", "")]
+    command: ["sh", Qt.resolvedUrl("backend/enforce.sh").toString().replace("file://", "")]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onEnforce(text)
@@ -230,7 +230,7 @@ BarWidget {
 
   Process {
     id: privacyProc
-    command: ["sh", "-c", "sh " + Qt.resolvedUrl("backend/privacy.sh").toString().replace("file://", "")]
+    command: ["sh", Qt.resolvedUrl("backend/privacy.sh").toString().replace("file://", "")]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onPrivacy(text)
@@ -371,7 +371,7 @@ BarWidget {
 
         Rectangle {
           anchors.fill: parent
-          radius: 4
+          radius: 12
           color: itemHover.containsMouse ? Qt.darker(root.bar.foreground, 1.3) : "transparent"
           opacity: itemHover.containsMouse ? 0.3 : 0
         }

@@ -331,6 +331,35 @@ if command -v nvidia-smi >/dev/null 2>&1; then
   fi
 fi
 
+# --- GPU: AMD fallback (amdgpu sysfs) when nvidia-smi is absent or empty.
+#     gpu_busy_percent + vram counters live under /sys/class/drm/card*/device,
+#     temperature under the matching hwmon chip. ---
+if [ -z "$GPU_NAME" ]; then
+  for ADEV in /sys/class/drm/card*/device; do
+    [ -r "$ADEV/gpu_busy_percent" ] || continue
+    GPU_PCT=$(cat "$ADEV/gpu_busy_percent" 2>/dev/null)
+    GPU_PCT=${GPU_PCT:-0}
+    GPU_NAME="AMD GPU"
+    GPU_DRIVER="amdgpu"
+    if [ -r "$ADEV/mem_info_vram_used" ]; then
+      V=$(cat "$ADEV/mem_info_vram_used" 2>/dev/null); [ -n "$V" ] || V=0
+      GPU_MEM=$((V / 1048576))
+    fi
+    if [ -r "$ADEV/mem_info_vram_total" ]; then
+      V=$(cat "$ADEV/mem_info_vram_total" 2>/dev/null); [ -n "$V" ] || V=0
+      GPU_MEM_TOTAL=$((V / 1048576))
+    fi
+    for hw in /sys/class/hwmon/hwmon*; do
+      [ -r "$hw/name" ] || continue
+      [ "$(cat "$hw/name" 2>/dev/null)" = "amdgpu" ] || continue
+      T=$(cat "$hw/temp1_input" 2>/dev/null)
+      [ -n "$T" ] && GPU_TEMP=$((T / 1000))
+      break
+    done
+    break
+  done
+fi
+
 # --- CPU identity ---
 CPU_NAME=$(sed -n 's/^model name[[:space:]]*: *//p' /proc/cpuinfo | head -1 | tr -d '\r')
 CPU_THREADS=$(grep -m1 '^siblings' /proc/cpuinfo | awk '{print $3}' 2>/dev/null)
@@ -371,6 +400,9 @@ PROC_COUNT=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l)
 # --- Top 20 processes by CPU (with per-process GPU memory % if available) ---
 GPU_PROC_MAP="$D/.omc_gpu_proc.$$"
 TMPFILES="$TMPFILES $GPU_PROC_MAP"
+# Always create the file: the merged PROCS awk below reads it, and it stays
+# empty whenever the driver produced no XML (no NVIDIA, unloaded driver, …).
+: > "$GPU_PROC_MAP"
 # nvidia-smi only lists compute contexts via --query-compute-apps (usually
 # empty), so parse the XML process table which includes graphical processes.
 # Reuses the -q -x dump written by the GPU block above (one smi XML per tick).

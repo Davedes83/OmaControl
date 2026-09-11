@@ -82,7 +82,6 @@ PanelWindow {
   readonly property string dataDir: Quickshell.env("HOME") + "/.local/share/omcontrol"
   readonly property string barStatsPath: dataDir + "/barstats.json"
 
-  readonly property var metricLabels: ({ cpu: "CPU", mem: "Memory", gpu: "GPU", procs: "Processes", disk: "Disk", net: "Net" })
   readonly property var metricUnits: ({ cpu: "%", mem: "%", gpu: "%", procs: "", disk: "%", net: "KB/s" })
   readonly property var filteredAlerts: root.computeAlerts()
   readonly property int activeAlertCount: root.filteredAlerts.length
@@ -453,7 +452,7 @@ PanelWindow {
 
   Process {
     id: sampleProc
-    command: ["sh", "-c", "sh " + Qt.resolvedUrl("backend/sample-json.sh").toString().replace("file://", "")]
+    command: ["sh", Qt.resolvedUrl("backend/sample-json.sh").toString().replace("file://", "")]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onSample(text)
@@ -579,7 +578,7 @@ PanelWindow {
           Rectangle {
             width: Style.space(34)
             height: Style.space(34)
-            radius: Style.space(10)
+            radius: Style.space(12)
             color: root.accentSoft
             border.width: 1
             border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.5)
@@ -613,7 +612,7 @@ PanelWindow {
         Row {
           anchors.centerIn: parent
           spacing: Style.space(6)
-          Pill {
+          OMCPill {
             label: root.compact ? "\uf065  Expand" : "\uf066  Compact"
             active: false
             onChosen: root.compact = !root.compact
@@ -647,12 +646,12 @@ PanelWindow {
             anchors.right: parent.right
             spacing: Style.space(8)
 
-            MetricPill { key: "cpu"; value: root.liveValue("cpu"); active: root.selMetric === "cpu"; onChosen: root.selMetric = "cpu" }
-            MetricPill { key: "mem"; value: root.liveValue("mem"); active: root.selMetric === "mem"; onChosen: root.selMetric = "mem" }
-            MetricPill { key: "gpu"; value: root.liveValue("gpu"); active: root.selMetric === "gpu"; onChosen: root.selMetric = "gpu" }
-            MetricPill { key: "procs"; value: root.liveValue("procs"); active: root.selMetric === "procs"; onChosen: root.selMetric = "procs" }
-            MetricPill { key: "disk"; value: root.liveValue("disk"); active: root.selMetric === "disk"; onChosen: root.selMetric = "disk" }
-            MetricPill { key: "net"; value: root.liveValue("net"); active: root.selMetric === "net"; onChosen: root.selMetric = "net" }
+            OMCPill { label: "CPU"; value: root.liveValue("cpu") + "%"; active: root.selMetric === "cpu"; onChosen: root.selMetric = "cpu" }
+            OMCPill { label: "Memory"; value: root.liveValue("mem") + "%"; active: root.selMetric === "mem"; onChosen: root.selMetric = "mem" }
+            OMCPill { label: "GPU"; value: root.liveValue("gpu") + "%"; active: root.selMetric === "gpu"; onChosen: root.selMetric = "gpu" }
+            OMCPill { label: "Processes"; value: Math.round(root.liveValue("procs")); active: root.selMetric === "procs"; onChosen: root.selMetric = "procs" }
+            OMCPill { label: "Disk"; value: root.liveValue("disk") + "%"; active: root.selMetric === "disk"; onChosen: root.selMetric = "disk" }
+            OMCPill { label: "Net"; value: root.liveValue("net"); active: root.selMetric === "net"; onChosen: root.selMetric = "net" }
 
             Item { width: Style.space(20); height: 1 }
 
@@ -686,6 +685,9 @@ PanelWindow {
                 : Style.space(235)
             pts: root.seriesFor(root.selMetric, root.chartWindow)
             lineColor: root.accent
+            events: root.sample.events || []
+            dangerColor: root.urgent
+            dangerThreshold: (root.selMetric === "procs" || root.selMetric === "net") ? -1 : 90
             maxValue: (root.selMetric === "procs" || root.selMetric === "net") ? -1 : 100
             unit: root.metricUnits[root.selMetric]
             windowSecs: root.chartWindow
@@ -728,7 +730,7 @@ PanelWindow {
               Rectangle {
                 width: parent.width - (root.drillProcs !== null ? Style.space(112) : 0)
                 height: Style.space(30)
-                radius: Style.space(8)
+                radius: Style.space(12)
                 color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
                 border.width: 1
                 border.color: Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.4)
@@ -757,7 +759,7 @@ PanelWindow {
                 }
               }
 
-              Pill {
+              OMCPill {
                 visible: root.drillProcs !== null
                 width: Style.space(104)
                 label: "\uf053  Live"
@@ -844,7 +846,7 @@ PanelWindow {
             Rectangle {
               width: parent.width - Style.space(360)
               height: Style.space(30)
-              radius: Style.space(8)
+              radius: Style.space(12)
               color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
               border.width: 1
               border.color: Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.4)
@@ -872,11 +874,11 @@ PanelWindow {
               }
             }
 
-            Pill { label: "Running"; active: root.activityFilter === "running"; onChosen: root.activityFilter = "running" }
-            Pill { label: "Not running"; active: root.activityFilter === "not"; onChosen: root.activityFilter = "not" }
-            Pill { label: "All"; active: root.activityFilter === "all"; onChosen: root.activityFilter = "all" }
-            Pill { label: "Disabled"; active: root.showDisabledOnly; onChosen: root.showDisabledOnly = !root.showDisabledOnly }
-            Pill {
+            OMCPill { label: "Running"; active: root.activityFilter === "running"; onChosen: root.activityFilter = "running" }
+            OMCPill { label: "Not running"; active: root.activityFilter === "not"; onChosen: root.activityFilter = "not" }
+            OMCPill { label: "All"; active: root.activityFilter === "all"; onChosen: root.activityFilter = "all" }
+            OMCPill { label: "Disabled"; active: root.showDisabledOnly; onChosen: root.showDisabledOnly = !root.showDisabledOnly }
+            OMCPill {
               width: Style.space(112)
               label: root.appsView === "publisher" ? "\uf0c9  By publisher" : "\uf03a  Flat list"
               active: false
@@ -968,12 +970,11 @@ PanelWindow {
             anchors.left: parent.left
             anchors.right: parent.right
             spacing: Style.space(8)
-            Pill { label: "Alerts config"; active: true; onChosen: {} }
+            OMCPill { label: "Alerts config"; active: true; onChosen: {} }
             Item { width: Style.space(10); height: 1 }
-            Pill {
+            OMCPill {
               label: root.alertPrefs.enabled ? "Alerts ON" : "Alerts OFF"
               active: root.alertPrefs.enabled !== false
-              accentStyle: true
               onChosen: {
                 var next = !root.alertPrefs.enabled
                 root.alertPrefs = ({ "enabled": next, "types": root.alertPrefs.types || {} })
@@ -1008,7 +1009,7 @@ PanelWindow {
               width: (parent.width - Style.space(10)) / 2
               spacing: Style.space(6)
               Rectangle {
-                width: parent.width; height: Style.space(30); radius: Style.space(6)
+                width: parent.width; height: Style.space(30); radius: Style.space(12)
                 color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.12)
                 border.width: 1
                 border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.4)
@@ -1023,10 +1024,9 @@ PanelWindow {
               }
               Repeater {
                 model: root.alertTypes
-                delegate: Pill {
+                delegate: OMCPill {
                   width: parent.width
                   active: (root.alertPrefs.types || {})[modelData] === true
-                  accentStyle: active
                   label: modelData
                   onChosen: {
                     var types = {}; var src = root.alertPrefs.types || {}
@@ -1044,7 +1044,7 @@ PanelWindow {
               width: (parent.width - Style.space(10)) / 2
               spacing: Style.space(6)
               Rectangle {
-                width: parent.width; height: Style.space(30); radius: Style.space(6)
+                width: parent.width; height: Style.space(30); radius: Style.space(12)
                 color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.10)
                 border.width: 1
                 border.color: Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.25)
@@ -1059,10 +1059,9 @@ PanelWindow {
               }
               Repeater {
                 model: root.alertTypes
-                delegate: Pill {
+                delegate: OMCPill {
                   width: parent.width
                   active: !((root.alertPrefs.types || {})[modelData])
-                  accentStyle: false
                   label: modelData
                   onChosen: {
                     var types = {}; var src = root.alertPrefs.types || {}
@@ -1101,23 +1100,22 @@ PanelWindow {
             anchors.left: parent.left
             anchors.right: parent.right
             spacing: Style.space(8)
-            Pill { label: "All"; active: root.eventFilter === "all"; onChosen: root.eventFilter = "all" }
-            Pill { label: "Launches"; active: root.eventFilter === "new_app"; onChosen: root.eventFilter = "new_app" }
-            Pill { label: "Exits"; active: root.eventFilter === "exit"; onChosen: root.eventFilter = "exit" }
-            Pill { label: "Spikes"; active: root.eventFilter === "spike"; onChosen: root.eventFilter = "spike" }
-            Pill { label: "Permissions"; active: root.eventFilter === "permission"; onChosen: root.eventFilter = "permission" }
-            Pill { label: "Security"; active: root.eventFilter === "security"; onChosen: root.eventFilter = "security" }
-            Pill { label: "User"; active: root.eventFilter === "user"; onChosen: root.eventFilter = "user" }
+            OMCPill { label: "All"; active: root.eventFilter === "all"; onChosen: root.eventFilter = "all" }
+            OMCPill { label: "Launches"; active: root.eventFilter === "new_app"; onChosen: root.eventFilter = "new_app" }
+            OMCPill { label: "Exits"; active: root.eventFilter === "exit"; onChosen: root.eventFilter = "exit" }
+            OMCPill { label: "Spikes"; active: root.eventFilter === "spike"; onChosen: root.eventFilter = "spike" }
+            OMCPill { label: "Permissions"; active: root.eventFilter === "permission"; onChosen: root.eventFilter = "permission" }
+            OMCPill { label: "Security"; active: root.eventFilter === "security"; onChosen: root.eventFilter = "security" }
+            OMCPill { label: "User"; active: root.eventFilter === "user"; onChosen: root.eventFilter = "user" }
             Item { width: Style.space(6); height: 1 }
-            Pill {
+            OMCPill {
               visible: root.eventBadge > 0
               width: Style.space(112)
               label: "\uf053  Mark all read"
-              accentStyle: true
               active: true
               onChosen: { root.markAllEventsRead(); root.eventBadge = 0; root.computeEvents() }
             }
-            Pill {
+            OMCPill {
               width: Style.space(84)
               label: "\uf00d  Clear"
               active: false
@@ -1132,7 +1130,7 @@ PanelWindow {
             anchors.left: parent.left
             anchors.right: parent.right
             height: Style.space(26)
-            radius: Style.space(8)
+            radius: Style.space(12)
             color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
             border.width: 1
             border.color: Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.4)
@@ -1255,7 +1253,7 @@ PanelWindow {
                 anchors.verticalCenter: parent.verticalCenter
               }
               Rectangle {
-                width: Style.space(64); height: Style.space(26); radius: Style.space(6)
+                width: Style.space(64); height: Style.space(26); radius: Style.space(12)
                 border.width: 1
                 border.color: root.barPrefs.mode === "icon" ? root.accent : root.dim1
                 color: (setIconModeArea.containsMouse || root.barPrefs.mode === "icon")
@@ -1277,7 +1275,7 @@ PanelWindow {
                 }
               }
               Rectangle {
-                width: Style.space(64); height: Style.space(26); radius: Style.space(6)
+                width: Style.space(64); height: Style.space(26); radius: Style.space(12)
                 border.width: 1
                 border.color: root.barPrefs.mode === "name" ? root.accent : root.dim1
                 color: (setNameModeArea.containsMouse || root.barPrefs.mode === "name")
@@ -1299,7 +1297,7 @@ PanelWindow {
                 }
               }
               Rectangle {
-                width: Style.space(64); height: Style.space(26); radius: Style.space(6)
+                width: Style.space(64); height: Style.space(26); radius: Style.space(12)
                 border.width: 1
                 border.color: root.barPrefs.mode === "none" ? root.accent : root.dim1
                 color: (setNoneModeArea.containsMouse || root.barPrefs.mode === "none")
@@ -1325,7 +1323,7 @@ PanelWindow {
             Rectangle {
               width: parent.width
               height: Style.space(36)
-              radius: Style.space(6)
+              radius: Style.space(12)
               color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.07)
               Row {
                 anchors.fill: parent
@@ -1361,7 +1359,7 @@ PanelWindow {
                   height: Style.space(30)
                   Rectangle {
                     anchors.fill: parent
-                    radius: Style.space(6)
+                    radius: Style.space(12)
                     color: tileHover.containsMouse || root.isBarPref(modelData.id)
                         ? Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
                         : "transparent"
@@ -1411,7 +1409,7 @@ PanelWindow {
               spacing: Style.space(6)
               Rectangle {
                 width: resetText.implicitWidth + Style.space(20)
-                height: Style.space(28); radius: Style.space(6)
+                height: Style.space(28); radius: Style.space(12)
                 border.width: 1
                 border.color: root.urgent
                 color: resetPrefsArea.containsMouse ? root.urgent : "transparent"
@@ -1511,32 +1509,53 @@ PanelWindow {
     onNo: {}
   }
 
-  component Pill: Item {
+  // Shared rounded-pill: used by the Activity MET selectors (label + optional
+  // live value), the Apps filter row, the Alerts config chips and (via
+  // RangePill) the history range selector — one shape everywhere.
+  component OMCPill: Rectangle {
     id: pill
-    property string label: ""
     property bool active: false
-    property bool accentStyle: false
+    property string label: ""
+    property string value: ""
     signal chosen()
-    height: Style.space(30)
-    width: Math.max(Style.space(18) + pillText.implicitWidth, Style.space(44))
-    Rectangle {
-      anchors.fill: parent
-      radius: Style.space(15)
-      color: pill.active
-          ? (pill.accentStyle ? root.accent : root.accentSoft)
-          : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.10)
-      border.width: 1
-      border.color: pill.active
-          ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.55)
-          : Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.25)
-    }
+    radius: height / 2
+    height: pill.value === "" ? Style.space(28) : Style.space(44)
+    width: pill.value === ""
+        ? Math.max(pillLabel.implicitWidth + Style.space(20), Style.space(40))
+        : Math.max(Style.space(104), Math.min(Style.space(170), pillValue.implicitWidth + Style.space(24)))
+    color: pill.active ? root.accent : root.accentSoft
     Text {
-      id: pillText
+      id: pillLabel
+      visible: pill.value === ""
       anchors.centerIn: parent
       text: pill.label
-      color: pill.active ? (pill.accentStyle ? root.bg : root.accent) : root.dim1
+      color: pill.active ? "#FFFFFF" : root.dim2
       font.family: root.contentFontFamily
       font.pixelSize: Style.font.caption
+    }
+    Column {
+      visible: pill.value !== ""
+      anchors.centerIn: parent
+      spacing: -2
+      Text {
+        anchors.horizontalCenter: parent.horizontalCenter
+        text: pill.label
+        color: pill.active ? "#FFFFFF" : root.dim2
+        font.family: root.contentFontFamily
+        font.pixelSize: Style.font.caption
+      }
+      Text {
+        id: pillValue
+        anchors.horizontalCenter: parent.horizontalCenter
+        text: pill.value
+        color: pill.active ? "#FFFFFF" : root.fg
+        font.family: root.contentFontFamily
+        font.pixelSize: Style.font.heading
+        font.bold: true
+        elide: Text.ElideRight
+        width: pill.width - Style.space(16)
+        horizontalAlignment: Text.AlignHCenter
+      }
     }
     MouseArea {
       anchors.fill: parent
@@ -1546,77 +1565,10 @@ PanelWindow {
     }
   }
 
-  component MetricPill: Item {
-    id: mp
-    property string key: "cpu"
-    property real value: 0
-    property bool active: false
-    signal chosen()
-    width: Style.space(112)
-    height: Style.space(44)
-    Rectangle {
-      anchors.fill: parent
-      radius: Style.space(10)
-      color: mp.active ? root.accentSoft : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.08)
-      border.width: 1
-      border.color: mp.active ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.5)
-                              : Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.2)
-      Column {
-        anchors.left: parent.left
-        anchors.leftMargin: Style.space(12)
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: 0
-        Text {
-          text: root.metricLabels[mp.key]
-          color: mp.active ? root.accent : root.dim1
-          font.family: root.contentFontFamily
-          font.pixelSize: Style.font.caption
-        }
-        Text {
-          text: root.metricUnits[mp.key] === "%" ? Math.round(mp.value) + "%" : Math.round(mp.value)
-          color: root.fg
-          font.family: root.contentFontFamily
-          font.pixelSize: Style.font.heading
-          font.bold: true
-        }
-      }
-      MouseArea {
-        anchors.fill: parent
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: mp.chosen()
-      }
-    }
-  }
-
-  component RangePill: Item {
+  component RangePill: OMCPill {
     id: rp
     property int seconds: 3600
-    property bool active: false
-    signal chosen()
-    width: Style.space(48)
-    height: Style.space(30)
-    Rectangle {
-      anchors.fill: parent
-      radius: Style.space(8)
-      color: rp.active ? root.accentSoft : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.08)
-      border.width: 1
-      border.color: rp.active ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.5)
-                              : Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.2)
-      Text {
-        anchors.centerIn: parent
-        text: rp.seconds >= 86400 ? "1D" : (rp.seconds >= 21600 ? "6H" : "1H")
-        color: rp.active ? root.accent : root.dim1
-        font.family: root.contentFontFamily
-        font.pixelSize: Style.font.caption
-      }
-      MouseArea {
-        anchors.fill: parent
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: rp.chosen()
-      }
-    }
+    label: rp.seconds >= 86400 ? "1D" : (rp.seconds >= 21600 ? "6H" : "1H")
   }
 
   component NavTab: Rectangle {
@@ -1626,45 +1578,65 @@ PanelWindow {
     property int badge: -1
     property bool active: false
     signal chosen()
-    color: nt.active ? root.accentSoft : "transparent"
-    Behavior on color { ColorAnimation { duration: 140 } }
-    Text {
-      id: ntIcon
+    color: "transparent"
+
+    Item {
+      id: ntBody
       anchors.centerIn: parent
-      anchors.verticalCenterOffset: -Style.space(8)
-      text: nt.iconText
-      color: nt.active ? root.accent : root.dim1
-      font.family: root.contentFontFamily
-      font.pixelSize: Style.font.body
-    }
-    Rectangle {
-      visible: nt.badge >= 0
-      width: Style.space(15)
-      height: Style.space(15)
-      radius: Style.space(8)
-      color: root.urgent
-      anchors.left: ntIcon.right
-      anchors.leftMargin: Style.space(2)
-      anchors.top: ntIcon.top
-      anchors.topMargin: -Style.space(2)
-      Text {
+      width: Math.max(ntIcon.implicitWidth, ntLabel.implicitWidth)
+      height: ntIcon.height + Style.space(2) + ntLabel.height
+
+      // Filled pill behind the icon + label for the active tab.
+      Rectangle {
+        visible: nt.active
         anchors.centerIn: parent
-        text: nt.badge
-        color: root.bg
+        width: ntBody.width + Style.space(16)
+        height: Style.space(32)
+        radius: height / 2
+        color: root.accentSoft
+      }
+
+      Text {
+        id: ntIcon
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.top: parent.top
+        text: nt.iconText
+        color: nt.active ? root.accent : root.dim1
+        font.family: root.contentFontFamily
+        font.pixelSize: Style.font.body
+      }
+
+      Rectangle {
+        visible: nt.badge >= 0
+        width: Style.space(15)
+        height: Style.space(15)
+        radius: Style.space(8)
+        color: root.urgent
+        anchors.left: ntIcon.right
+        anchors.leftMargin: Style.space(2)
+        anchors.top: ntIcon.top
+        anchors.topMargin: -Style.space(2)
+        Text {
+          anchors.centerIn: parent
+          text: nt.badge
+          color: root.bg
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
+
+      Text {
+        id: ntLabel
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.top: ntIcon.bottom
+        anchors.topMargin: Style.space(2)
+        text: nt.label
+        color: nt.active ? root.accent : root.dim2
         font.family: root.contentFontFamily
         font.pixelSize: Style.font.caption
       }
     }
-    Text {
-      id: ntLabel
-      anchors.horizontalCenter: parent.horizontalCenter
-      anchors.top: ntIcon.bottom
-      anchors.topMargin: Style.space(2)
-      text: nt.label
-      color: nt.active ? root.accent : root.dim2
-      font.family: root.contentFontFamily
-      font.pixelSize: Style.font.caption
-    }
+
     MouseArea {
       anchors.fill: parent
       hoverEnabled: true
@@ -1682,7 +1654,7 @@ PanelWindow {
     height: Style.space(22)
     Rectangle {
       anchors.fill: parent
-      radius: Style.space(5)
+      radius: Style.space(12)
       color: chip.danger ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.14)
                          : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
       border.width: 1
@@ -1725,7 +1697,7 @@ PanelWindow {
       id: arBase
       width: parent.width
       height: ar.rowH
-      radius: Style.space(6)
+      radius: Style.space(12)
       color: ar.hot ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.08)
                     : (ar.app.disabled ? Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.03)
                                        : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.05))
@@ -1784,7 +1756,7 @@ PanelWindow {
           visible: ar.app.disabled
           width: Style.space(48)
           height: Style.space(16)
-          radius: Style.space(4)
+          radius: Style.space(8)
           color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.14)
           Text {
             anchors.centerIn: parent
@@ -1798,7 +1770,7 @@ PanelWindow {
           visible: ar.unsigned
           width: Style.space(60)
           height: Style.space(16)
-          radius: Style.space(4)
+          radius: Style.space(8)
           color: Qt.rgba(0.9, 0.6, 0.15, 0.18)
           border.width: 1
           border.color: Qt.rgba(0.9, 0.6, 0.15, 0.5)
@@ -1815,7 +1787,7 @@ PanelWindow {
           delegate: Rectangle {
             width: (modelData === "camera" ? Style.space(44) : (modelData === "mic" ? Style.space(34) : Style.space(58)))
             height: Style.space(16)
-            radius: Style.space(4)
+            radius: Style.space(8)
             color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.10)
             border.width: 1
             border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.4)
@@ -1837,7 +1809,7 @@ PanelWindow {
         anchors.verticalCenter: parent.verticalCenter
         width: Style.space(30)
         height: Style.space(16)
-        radius: Style.space(4)
+        radius: Style.space(8)
         color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
         Text {
           anchors.centerIn: parent
@@ -1873,7 +1845,7 @@ PanelWindow {
         anchors.verticalCenter: parent.verticalCenter
         width: Style.space(60)
         height: Style.space(16)
-        radius: Style.space(4)
+        radius: Style.space(8)
         color: ar.hot ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.14)
                       : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.10)
         Text {
@@ -1892,7 +1864,7 @@ PanelWindow {
         anchors.verticalCenter: parent.verticalCenter
         width: Style.space(24)
         height: Style.space(22)
-        radius: Style.space(5)
+        radius: Style.space(12)
         color: ar.actionsOpen ? root.accentSoft : "transparent"
         Text {
           anchors.centerIn: parent
@@ -1946,7 +1918,7 @@ PanelWindow {
 
     Rectangle {
       anchors.fill: parent
-      radius: Style.space(6)
+      radius: Style.space(12)
       color: alr.dot === root.urgent
           ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.07)
           : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.05)
@@ -1999,7 +1971,7 @@ PanelWindow {
       anchors.verticalCenter: parent.verticalCenter
       width: Style.space(22)
       height: Style.space(22)
-      radius: Style.space(5)
+      radius: Style.space(12)
       color: "transparent"
       Text {
         anchors.centerIn: parent
@@ -2056,7 +2028,7 @@ PanelWindow {
 
     Rectangle {
       anchors.fill: parent
-      radius: Style.space(6)
+      radius: Style.space(12)
       color: evr.unread ? root.accentSoft : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.05)
     }
     Rectangle {
@@ -2085,7 +2057,7 @@ PanelWindow {
       anchors.verticalCenter: parent.verticalCenter
       width: Style.space(56)
       height: Style.space(15)
-      radius: Style.space(4)
+      radius: Style.space(8)
       color: Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.14)
       Text {
         anchors.centerIn: parent
@@ -2178,7 +2150,7 @@ PanelWindow {
 
     Rectangle {
       anchors.fill: parent
-      radius: Style.space(8)
+      radius: Style.space(12)
       color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.04)
       border.width: 1
       border.color: Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.10)
@@ -2190,7 +2162,7 @@ PanelWindow {
       anchors.left: parent.left
       anchors.right: parent.right
       height: Style.space(30)
-      radius: Style.space(8)
+      radius: Style.space(12)
       color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.10)
 
       MouseArea {
@@ -2225,7 +2197,7 @@ PanelWindow {
         anchors.verticalCenter: parent.verticalCenter
         width: pg.actionsOpen ? Style.space(0) : Style.space(24)
         height: Style.space(16)
-        radius: Style.space(4)
+        radius: Style.space(8)
         color: pg.actionsOpen ? "transparent" : root.accentSoft
         Text {
           anchors.centerIn: parent
@@ -2358,7 +2330,7 @@ PanelWindow {
 
     Rectangle {
       anchors.fill: parent
-      radius: Style.space(10)
+      radius: Style.space(12)
       color: root.surface
       border.width: 1
       border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.45)
@@ -2383,7 +2355,7 @@ PanelWindow {
       }
       Rectangle {
         visible: dp.app && !dp.app.verified
-        width: Style.space(62); height: Style.space(16); radius: Style.space(4)
+        width: Style.space(62); height: Style.space(16); radius: Style.space(8)
         color: Qt.rgba(0.9, 0.6, 0.15, 0.15)
         border.width: 1
         border.color: Qt.rgba(0.9, 0.6, 0.15, 0.45)
@@ -2391,7 +2363,7 @@ PanelWindow {
       }
       Rectangle {
         visible: dp.app && dp.app.verified
-        width: Style.space(70); height: Style.space(16); radius: Style.space(4)
+        width: Style.space(70); height: Style.space(16); radius: Style.space(8)
         color: Qt.rgba(0.2, 0.7, 0.3, 0.15)
         border.width: 1
         border.color: Qt.rgba(0.2, 0.7, 0.3, 0.45)
@@ -2400,7 +2372,7 @@ PanelWindow {
       Rectangle {
         visible: !!(dp.app && dp.app.perms && dp.app.perms.length > 0)
         width: Math.min(Style.space(110), Style.space(14) + dpPermText.implicitWidth)
-        height: Style.space(16); radius: Style.space(4)
+        height: Style.space(16); radius: Style.space(8)
         color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.10)
         border.width: 1
         border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.4)
@@ -2477,7 +2449,7 @@ PanelWindow {
           delegate: Rectangle {
             width: (dpStatsFlow.width - Style.space(6)) / 2
             height: Style.space(32)
-            radius: Style.space(6)
+            radius: Style.space(12)
             color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.10)
             border.width: 1
             border.color: Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.15)
@@ -2604,7 +2576,7 @@ PanelWindow {
 
     Rectangle {
       anchors.fill: parent
-      radius: Style.space(8)
+      radius: Style.space(12)
       color: Qt.rgba(root.surface.r, root.surface.g, root.surface.b, 0.97)
       border.width: 1
       border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.55)
@@ -2711,7 +2683,7 @@ PanelWindow {
 
     Rectangle {
       anchors.fill: parent
-      radius: Style.space(6)
+      radius: Style.space(12)
       color: pr.critical
           ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.10)
           : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.05)
@@ -2757,7 +2729,7 @@ PanelWindow {
         visible: pr.disabled
         width: Style.space(50)
         height: Style.space(14)
-        radius: Style.space(4)
+        radius: Style.space(7)
         color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.14)
         Text {
           anchors.centerIn: parent
@@ -2771,7 +2743,7 @@ PanelWindow {
         visible: !pr.verified
         width: Style.space(62)
         height: Style.space(14)
-        radius: Style.space(4)
+        radius: Style.space(7)
         color: Qt.rgba(0.9, 0.6, 0.15, 0.15)
         border.width: 1
         border.color: Qt.rgba(0.9, 0.6, 0.15, 0.45)
@@ -2788,7 +2760,7 @@ PanelWindow {
         delegate: Rectangle {
           width: modelData === "camera" ? Style.space(40) : (modelData === "mic" ? Style.space(30) : Style.space(52))
           height: Style.space(14)
-          radius: Style.space(4)
+          radius: Style.space(7)
           color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.10)
           border.width: 1
           border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.4)
@@ -2805,7 +2777,7 @@ PanelWindow {
         visible: pr.instances > 1
         width: Style.space(20)
         height: Style.space(14)
-        radius: Style.space(4)
+        radius: Style.space(7)
         color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.10)
         Text {
           anchors.centerIn: parent
@@ -2858,7 +2830,7 @@ PanelWindow {
       anchors.verticalCenter: parent.verticalCenter
       width: Style.space(64)
       height: Style.space(16)
-      radius: Style.space(4)
+      radius: Style.space(8)
       color: pr.critical ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.14)
                          : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.10)
       Text {
@@ -2901,7 +2873,10 @@ PanelWindow {
   component HistoryGraph: Canvas {
     id: hg
     property var pts: []
+    property var events: []
     property color lineColor: root.accent
+    property color dangerColor: root.urgent
+    property real dangerThreshold: -1
     property int maxValue: 100
     property string unit: "%"
     property int windowSecs: 3600
@@ -2914,10 +2889,21 @@ PanelWindow {
 
     onWindowSecsChanged: resetView()
     onPtsChanged: requestPaint()
+    onEventsChanged: requestPaint()
     onWidthChanged: requestPaint()
     onHeightChanged: requestPaint()
 
     function resetView() { viewStart = -1; viewEnd = -1; requestPaint() }
+
+    function evColor(kind) {
+      if (kind === "app_launch" || kind === "new_app") return "#3cb371"
+      if (kind === "app_exit") return Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.85)
+      if (kind.indexOf("spike") >= 0) return hg.dangerColor
+      if (kind === "publisher_block" || kind === "unsigned_launch" || kind === "unknown_app"
+          || kind === "mic_access" || kind === "cam_access" || kind === "location_access") return hg.dangerColor
+      if (kind.indexOf("user_") === 0) return hg.lineColor
+      return Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.7)
+    }
 
     function dataStart() { return hg.pts.length ? hg.pts[0].ts : 0 }
     function dataEnd() { return hg.pts.length ? hg.pts[hg.pts.length - 1].ts : 0 }
@@ -3031,25 +3017,9 @@ PanelWindow {
       if (hg.pts.length < 2) return
       var spanT = Math.max(1, hg.domainEnd() - hg.domainStart())
 
-      var grad = ctx.createLinearGradient(0, topPad, 0, h - bottomPad)
-      grad.addColorStop(0, Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.26))
-      grad.addColorStop(1, Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.02))
+      // Clean single-pixel-width line (no area fill, no halo) in accent color.
       ctx.beginPath()
       var started = false
-      for (var ai = 0; ai < hg.pts.length; ai++) {
-        var ap = hg.pts[ai]
-        var aX = leftPad + (ap.ts - hg.domainStart()) / spanT * plotW
-        var aY = topPad + plotH - Math.max(0, Math.min(yMax, ap.v)) / yMax * plotH
-        if (!started) { ctx.moveTo(aX, h - bottomPad); started = true }
-        ctx.lineTo(aX, aY)
-      }
-      ctx.lineTo(leftPad + plotW, h - bottomPad)
-      ctx.closePath()
-      ctx.fillStyle = grad
-      ctx.fill()
-
-      ctx.beginPath()
-      started = false
       for (var li = 0; li < hg.pts.length; li++) {
         var lp = hg.pts[li]
         var lX = leftPad + (lp.ts - hg.domainStart()) / spanT * plotW
@@ -3057,12 +3027,61 @@ PanelWindow {
         if (!started) { ctx.moveTo(lX, lY); started = true }
         else ctx.lineTo(lX, lY)
       }
-      ctx.strokeStyle = Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.15)
-      ctx.lineWidth = 7
-      ctx.stroke()
       ctx.strokeStyle = hg.lineColor
       ctx.lineWidth = 2
+      ctx.lineJoin = "round"
+      ctx.lineCap = "round"
       ctx.stroke()
+
+      // Spike highlight: any span whose values cross the danger threshold is
+      // re-stroked in the danger color (segments, not a second series).
+      if (hg.dangerThreshold > 0) {
+        ctx.strokeStyle = hg.dangerColor
+        ctx.lineWidth = 2
+        var hot = false
+        for (var di = 0; di < hg.pts.length; di++) {
+          var dpt = hg.pts[di]
+          var dX = leftPad + (dpt.ts - hg.domainStart()) / spanT * plotW
+          var dY = topPad + plotH - Math.max(0, Math.min(yMax, dpt.v)) / yMax * plotH
+          if (dpt.v >= hg.dangerThreshold) {
+            if (!hot) { ctx.beginPath(); ctx.moveTo(dX, dY); hot = true }
+            else ctx.lineTo(dX, dY)
+          } else if (hot) {
+            ctx.stroke()
+            hot = false
+          }
+        }
+        if (hot) ctx.stroke()
+      }
+
+      // Event markers: small filled circles hovering just above the line,
+      // colored by event kind (green for launches).
+      if (hg.events && hg.events.length) {
+        var eST = hg.domainStart(), eET = hg.domainEnd()
+        for (var mi = 0; mi < hg.events.length; mi++) {
+          var ev = hg.events[mi]
+          if (ev.ts < eST || ev.ts > eET) continue
+          var mX = leftPad + (ev.ts - eST) / spanT * plotW
+          var vAt = -1
+          for (var bi = 0; bi < hg.pts.length; bi++) {
+            if (hg.pts[bi].ts <= ev.ts) vAt = hg.pts[bi].v
+            else {
+              if (bi > 0 && hg.pts[bi].ts !== hg.pts[bi - 1].ts) {
+                var f = (ev.ts - hg.pts[bi - 1].ts) / (hg.pts[bi].ts - hg.pts[bi - 1].ts)
+                vAt = hg.pts[bi - 1].v + f * (hg.pts[bi].v - hg.pts[bi - 1].v)
+              } else vAt = hg.pts[bi].v
+              break
+            }
+          }
+          if (vAt < 0) continue
+          var mY = topPad + plotH - Math.max(0, Math.min(yMax, vAt)) / yMax * plotH
+          var cY = Math.max(topPad + 2, mY - 7)
+          ctx.beginPath()
+          ctx.arc(mX, cY, 3.3, 0, Math.PI * 2)
+          ctx.fillStyle = hg.evColor(ev.kind || ev.type || "")
+          ctx.fill()
+        }
+      }
 
       if (dragStart >= 0 && !hg.zoomed) {
         var bX = Math.min(dragStart, dragCur)
@@ -3148,17 +3167,17 @@ PanelWindow {
       }
     }
 
-    // Hover tooltip (dark rounded card, timestamp + value + top-3 processes).
+    // Hover tooltip (hard-coded dark card, native-app feel regardless of theme).
     Rectangle {
       id: tip
       z: 50
       visible: false
       width: Style.space(220)
       implicitHeight: tipCol.implicitHeight + Style.space(16)
-      radius: Style.space(10)
-      color: Qt.rgba(0, 0, 0, 0.85)
+      radius: Style.space(12)
+      color: "#1e1b2e"
       border.width: 1
-      border.color: Qt.rgba(1, 1, 1, 0.18)
+      border.color: Qt.rgba(1, 1, 1, 0.14)
       Column {
         id: tipCol
         anchors.fill: parent
@@ -3168,14 +3187,14 @@ PanelWindow {
           spacing: Style.space(8)
           Text {
             id: tipTime
-            color: "white"
+            color: "#ffffff"
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
             font.bold: true
           }
           Text {
             id: tipValue
-            color: Qt.rgba(1, 1, 1, 0.75)
+            color: Qt.rgba(1, 1, 1, 0.8)
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
           }
@@ -3183,7 +3202,7 @@ PanelWindow {
         Text {
           id: tipTop
           width: tip.width - Style.space(16)
-          color: Qt.rgba(1, 1, 1, 0.65)
+          color: Qt.rgba(1, 1, 1, 0.7)
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
@@ -3191,7 +3210,7 @@ PanelWindow {
         Text {
           id: tipMore
           text: "  click for all processes"
-          color: Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.9)
+          color: hg.lineColor
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
           font.bold: true

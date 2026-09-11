@@ -23,11 +23,11 @@ NAME="$2"
 }
 
 log_event() {
-  local type="$1" msg="$2"
+  type="$1" msg="$2" now=""
   [ -f "$DB" ] || return 0
-  NOW=$(date +%s)
+  now=$(date +%s)
   # Publisher is resolved from app_meta inside sql-ins.py (bound params).
-  printf 'event\t%s\t%s\t%s\t\t%s\t0\n' "$NOW" "$type" "$NAME" "$msg" \
+  printf 'event\t%s\t%s\t%s\t\t%s\t0\n' "$now" "$type" "$NAME" "$msg" \
     | OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" 2>/dev/null
 }
 
@@ -61,23 +61,24 @@ PY
 }
 
 case "$ACTION" in
-  kill) pkill -TERM -x "$NAME"; log_event "user_kill" "Terminated $NAME" ;;
-  killall) pkill -KILL -x "$NAME"; log_event "user_kill" "Force-killed $NAME" ;;
-  stop) pkill -STOP -x "$NAME"; log_event "user_pause" "Paused $NAME" ;;
-  cont) pkill -CONT -x "$NAME"; log_event "user_resume" "Resumed $NAME" ;;
+  kill) PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME"); [ -n "$PIDS" ] && kill -TERM $PIDS 2>/dev/null; log_event "user_kill" "Terminated $NAME" ;;
+  killall) PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME"); [ -n "$PIDS" ] && kill -KILL $PIDS 2>/dev/null; log_event "user_kill" "Force-killed $NAME" ;;
+  stop) PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME"); [ -n "$PIDS" ] && kill -STOP $PIDS 2>/dev/null; log_event "user_pause" "Paused $NAME" ;;
+  cont) PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME"); [ -n "$PIDS" ] && kill -CONT $PIDS 2>/dev/null; log_event "user_resume" "Resumed $NAME" ;;
   fast)
-    pids=$(pgrep -x "$NAME")
-    [ -n "$pids" ] && renice -n -5 -p $pids >/dev/null 2>&1
+    PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME")
+    [ -n "$PIDS" ] && renice -n -5 -p $PIDS >/dev/null 2>&1
     log_event "user_priority" "Priority boost applied to $NAME"
     ;;
   slow)
-    pids=$(pgrep -x "$NAME")
-    [ -n "$pids" ] && renice -n 5 -p $pids >/dev/null 2>&1
+    PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME")
+    [ -n "$PIDS" ] && renice -n 5 -p $PIDS >/dev/null 2>&1
     log_event "user_priority" "Priority drop applied to $NAME"
     ;;
   disable)
     rules_set_state on
-    pkill -KILL -x "$NAME" 2>/dev/null
+    PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME")
+    [ -n "$PIDS" ] && kill -KILL $PIDS 2>/dev/null
     log_event "user_disable" "Disabled $NAME (blocked from launching)"
     ;;
   enable)

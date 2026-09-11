@@ -64,15 +64,11 @@ grep -v '^$' "$TMP" | sed 's/\r$//' | while IFS='|' read -r kind action pattern;
   fi
 
   if [ -z "$DRY_RUN" ]; then
-    PIDS=$(pgrep -x "$pattern" 2>/dev/null)
+    # Match on comm AND the full resolved exe basename (comm is truncated to
+    # 15 chars; match-pids.sh closes that gap by also matching readlink exe).
+    PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$pattern")
     [ -z "$PIDS" ] && PIDS=$(pgrep -f "$pattern" 2>/dev/null)
-    for exepid in $(ls -d /proc/[0-9]* 2>/dev/null | sed 's|/proc/||'); do
-      EXEN=$(basename "$(readlink "/proc/$exepid/exe" 2>/dev/null)" 2>/dev/null)
-      if [ "$EXEN" = "$pattern" ]; then
-        PIDS="$PIDS $exepid"
-      fi
-    done
-    PIDS=$(echo "$PIDS" | tr ' ' '\n' | sort -un)
+    PIDS=$(echo "$PIDS" | sort -un)
   else
     PIDS=""
   fi

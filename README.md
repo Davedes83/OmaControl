@@ -17,7 +17,7 @@ An Omarchy shell plugin (Quickshell, Hyprland) that turns your top-bar icon into
 - **Privacy alerts** — desktop notifications when the camera, microphone, or location are newly in use
 - **New-app detection** — notifies when an application is first seen running
 - **Process control** — kill, suspend/resume, priority boost/drop, or permanently disable an app (kill-now + enforce on next launch)
-- **Historical database** — samples collected every 2 s from `/proc` (plus `nvidia-smi` for GPU) into SQLite; downsampled on the way in so you always have the full picture
+- **Historical database** — samples collected every 2 s from `/proc` into SQLite; GPU utilization, VRAM and temperature come from `nvidia-smi` (NVIDIA) or the `amdgpu` driver's sysfs (AMD). Downsampled on the way in so you always have the full picture
 
 ## Installation
 
@@ -93,7 +93,7 @@ Environment overrides: `OMCONTROL_DB`, `OMCONTROL_DATA_DIR`, `OMCONTROL_RULES`.
 
 ## How It Works
 
-- `collect.sh` samples `/proc` every 2 s (CPU, memory, disk, per-process stats, network byte counters) and `nvidia-smi` for GPU utilization/temps, then writes to SQLite; old samples are downsampled out-of-band to keep the table bounded.
+- `collect.sh` samples `/proc` every 2 s (CPU, memory, disk, per-process stats, network byte counters), then writes to SQLite; old samples are downsampled out-of-band to keep the table bounded. GPU metrics come from `nvidia-smi` (NVIDIA) or from the `amdgpu` sysfs interface when `nvidia-smi` is unavailable (AMD: `gpu_busy_percent`, VRAM counters, hwmon temperature). Per-process GPU memory attribution needs the NVIDIA XML dump and is therefore NVIDIA-only.
 - Per-app history (`app-stats.sh`) aggregates peak/avg CPU, memory, GPU and I/O from the per-process snapshot blobs in `proc_history`.
 - Live per-app socket counts come from `/proc/<pid>/fd` inode mapping into `/proc/net/{tcp,tcp6,udp,udp6}` — a small window into each app's network footprint without root.
 - Alert/enforcement rules are applied on sample ingestion; disallowed apps are killed at launch. Everything runs from the plugin's own backend scripts, so it keeps working even if the database grows large.
@@ -103,7 +103,8 @@ Environment overrides: `OMCONTROL_DB`, `OMCONTROL_DATA_DIR`, `OMCONTROL_RULES`.
 - [Omarchy](https://omarchy.org/) Linux
 - Hyprland compositor
 - Quickshell (the shell framework)
-- `sqlite3`, `python3`, `nvidia-smi` (for GPU metrics; everything else works without an NVIDIA GPU)
+- `sqlite3`, `python3`
+- GPU metrics: NVIDIA via `nvidia-smi`, or AMD via the kernel `amdgpu` driver (no extra package). Per-process GPU attribution remains NVIDIA-only.
 
 ## License
 
