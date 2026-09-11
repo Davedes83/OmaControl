@@ -131,7 +131,10 @@ Panel {
   }
 
   function refresh() {
-    if (!collectProc.running) collectProc.running = true
+    // Collection is owned by the bar widget's 2s loop; the panel consumes
+    // hostWidget.lastData. Only fall back to a local collect when standalone.
+    if (hostWidget && "refresh" in hostWidget) hostWidget.refresh()
+    else if (!collectProc.running) collectProc.running = true
     loadRules()
   }
 
@@ -496,14 +499,6 @@ Panel {
     id: saveProc
     command: ["true"]
     stdout: StdioCollector { waitForEnd: true }
-  }
-
-  Timer {
-    interval: 2000
-    running: root.opened
-    repeat: true
-    triggeredOnStart: true
-    onTriggered: root.refresh()
   }
 
   // ---- Reusable components
