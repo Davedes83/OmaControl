@@ -29,36 +29,61 @@ MEM=$((MEM_USED * 100 / MEM_TOTAL))
 
 # History rolls with disk + network included (net rates derived from
 # cumulative byte counters: delta bytes / delta seconds / 1024 = KB/s).
-H1=$(sqlite3 -cmd ".timeout 3000" "$DB" "
-  SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx)) || ']'
-  FROM (SELECT (ts/60)*60 as ts, avg(cpu_pct) as cpu,
-               round(avg(mem_used_mb) * 100.0 / avg(mem_total_mb)) as mem,
-               avg(gpu_pct) as gpu, round(avg(proc_count)) as procs,
-               round(avg(disk_pct)) as disk,
-               round((max(net_rx_bytes) - min(net_rx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as rx,
-               round((max(net_tx_bytes) - min(net_tx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as tx
-        FROM metrics WHERE ts > $NOW - 3600 GROUP BY ts/60 ORDER BY ts);" 2>/dev/null)
-[ -z "$H1" ] && H1="[]"
-H6=$(sqlite3 -cmd ".timeout 3000" "$DB" "
-  SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx)) || ']'
-  FROM (SELECT (ts/300)*300 as ts, avg(cpu_pct) as cpu,
-               round(avg(mem_used_mb) * 100.0 / avg(mem_total_mb)) as mem,
-               avg(gpu_pct) as gpu, round(avg(proc_count)) as procs,
-               round(avg(disk_pct)) as disk,
-               round((max(net_rx_bytes) - min(net_rx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as rx,
-               round((max(net_tx_bytes) - min(net_tx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as tx
-        FROM metrics WHERE ts > $NOW - 21600 GROUP BY ts/300 ORDER BY ts);" 2>/dev/null)
-[ -z "$H6" ] && H6="[]"
-H1D=$(sqlite3 -cmd ".timeout 3000" "$DB" "
-  SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx)) || ']'
-  FROM (SELECT (ts/900)*900 as ts, avg(cpu_pct) as cpu,
-               round(avg(mem_used_mb) * 100.0 / avg(mem_total_mb)) as mem,
-               avg(gpu_pct) as gpu, round(avg(proc_count)) as procs,
-               round(avg(disk_pct)) as disk,
-               round((max(net_rx_bytes) - min(net_rx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as rx,
-               round((max(net_tx_bytes) - min(net_tx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as tx
-        FROM metrics WHERE ts > $NOW - 86400 GROUP BY ts/900 ORDER BY ts);" 2>/dev/null)
-[ -z "$H1D" ] && H1D="[]"
+# The app window polls this every 4s, but the chart is downsampled to
+# 60s/300s/900s buckets — so rolls are recomputed at most every 30s and
+# cached on disk; the cache is also the source between recomputes.
+ROLL_BASE="${DB}.rolls"
+ROLL_STAMP="$ROLL_BASE.stamp"
+ROLL_CACHE="$ROLL_BASE.v1"
+ROLLS_LAST=0
+[ -f "$ROLL_STAMP" ] && ROLLS_LAST=$(cat "$ROLL_STAMP" 2>/dev/null || echo 0)
+ROLLS_AGE=$((NOW - ${ROLLS_LAST:-0}))
+
+if [ "$ROLLS_AGE" -lt 30 ] && [ -f "$ROLL_CACHE" ]; then
+  H1=$(sed -n '1p' "$ROLL_CACHE")
+  H6=$(sed -n '2p' "$ROLL_CACHE")
+  H1D=$(sed -n '3p' "$ROLL_CACHE")
+  [ -z "$H1" ] && H1="[]"
+  [ -z "$H6" ] && H6="[]"
+  [ -z "$H1D" ] && H1D="[]"
+else
+  ROLLS_OUT=$(sqlite3 -cmd ".timeout 3000" "$DB" <<SQL 2>/dev/null
+SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx)) || ']'
+FROM (SELECT (ts/60)*60 as ts, avg(cpu_pct) as cpu,
+             round(avg(mem_used_mb) * 100.0 / avg(mem_total_mb)) as mem,
+             avg(gpu_pct) as gpu, round(avg(proc_count)) as procs,
+             round(avg(disk_pct)) as disk,
+             round((max(net_rx_bytes) - min(net_rx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as rx,
+             round((max(net_tx_bytes) - min(net_tx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as tx
+      FROM metrics WHERE ts > $NOW - 3600 GROUP BY ts/60 ORDER BY ts);
+SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx)) || ']'
+FROM (SELECT (ts/300)*300 as ts, avg(cpu_pct) as cpu,
+             round(avg(mem_used_mb) * 100.0 / avg(mem_total_mb)) as mem,
+             avg(gpu_pct) as gpu, round(avg(proc_count)) as procs,
+             round(avg(disk_pct)) as disk,
+             round((max(net_rx_bytes) - min(net_rx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as rx,
+             round((max(net_tx_bytes) - min(net_tx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as tx
+      FROM metrics WHERE ts > $NOW - 21600 GROUP BY ts/300 ORDER BY ts);
+SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx)) || ']'
+FROM (SELECT (ts/900)*900 as ts, avg(cpu_pct) as cpu,
+             round(avg(mem_used_mb) * 100.0 / avg(mem_total_mb)) as mem,
+             avg(gpu_pct) as gpu, round(avg(proc_count)) as procs,
+             round(avg(disk_pct)) as disk,
+             round((max(net_rx_bytes) - min(net_rx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as rx,
+             round((max(net_tx_bytes) - min(net_tx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as tx
+      FROM metrics WHERE ts > $NOW - 86400 GROUP BY ts/900 ORDER BY ts);
+SQL
+)
+  H1=$(printf '%s\n' "$ROLLS_OUT" | sed -n '1p')
+  H6=$(printf '%s\n' "$ROLLS_OUT" | sed -n '2p')
+  H1D=$(printf '%s\n' "$ROLLS_OUT" | sed -n '3p')
+  [ -z "$H1" ] && H1="[]"
+  [ -z "$H6" ] && H6="[]"
+  [ -z "$H1D" ] && H1D="[]"
+  printf '%s\n%s\n%s\n' "$H1" "$H6" "$H1D" > "$ROLL_CACHE.tmp"
+  mv "$ROLL_CACHE.tmp" "$ROLL_CACHE"
+  echo "$NOW" > "$ROLL_STAMP"
+fi
 
 # Live network rates from the two most recent metric samples (KB/s).
 NET_L=$(sqlite3 -cmd ".timeout 3000" "$DB" "SELECT ts, COALESCE(net_rx_bytes,0), COALESCE(net_tx_bytes,0) FROM metrics WHERE net_rx_bytes IS NOT NULL ORDER BY ts DESC LIMIT 2;" 2>/dev/null)

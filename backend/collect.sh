@@ -13,51 +13,55 @@ NOW=$(date +%s)
 # Prune stale temp files from past invocations that got killed mid-run.
 find "$DATA_DIR" -maxdepth 1 -name '.omc_*' -mmin +30 -delete 2>/dev/null
 
-# --- Alert preferences (shared with the Alerts tab; imported by app-action.sh) ---
+# --- Alert preferences (shared with the Alerts tab; imported by app-action.sh).
+#     Parsed once and cached; only re-parsed when alert_prefs.json changes,
+#     so this doesn't cost a python3 spawn on every 2s tick. ---
 ALERT_PREFS="${OMCONTROL_ALERT_PREFS:-$DATA_DIR/alert_prefs.json}"
-ALERTS_ENABLED=1
-pref_enabled() {
-  [ -f "$ALERT_PREFS" ] || { echo 1; return; }
-  python3 - "$ALERT_PREFS" <<'PY'
+ALERT_CACHE="$DATA_DIR/.alert_prefs_cache"
+if [ -f "$ALERT_PREFS" ] && { [ ! -f "$ALERT_CACHE" ] || [ "$ALERT_PREFS" -nt "$ALERT_CACHE" ]; }; then
+  python3 - "$ALERT_PREFS" > "$ALERT_CACHE" <<'PY'
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
-    print(1 if d.get("enabled", True) else 0)
 except Exception:
-    print(1)
+    d = {}
+print("enabled=%d" % (1 if d.get("enabled", True) else 0))
+for k, v in (d.get("types") or {}).items():
+    if v:
+        print("type=%s" % k)
 PY
+fi
+ALERTS_ENABLED=1
+pref_enabled() {
+  grep -m1 '^enabled=' "$ALERT_CACHE" 2>/dev/null | cut -d= -f2
 }
 pref_on() {
   [ -f "$ALERT_PREFS" ] || { echo 1; return; }
-  python3 - "$ALERT_PREFS" "$1" <<'PY'
-import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-    print(1 if d.get("types", {}).get(sys.argv[2], False) else 0)
-except Exception:
-    print(0)
-PY
+  grep -Fqx "type=$1" "$ALERT_CACHE" 2>/dev/null && echo 1 || echo 0
 }
-ALERTS_ENABLED=$(pref_enabled)
+[ -z "$ALERTS_ENABLED" ] && ALERTS_ENABLED=1
 
-# --- Ensure DB exists ---
-if [ ! -f "$DB" ]; then
-  sqlite3 -cmd ".timeout 1500" "$DB" "CREATE TABLE IF NOT EXISTS metrics (
-    ts INTEGER PRIMARY KEY,
-    cpu_pct REAL,
-    mem_used_mb INTEGER,
-    mem_total_mb INTEGER,
-    gpu_pct REAL,
-    gpu_mem_mb INTEGER,
-    gpu_temp INTEGER,
-    cpu_temp INTEGER,
-    proc_count INTEGER
-  );
-  CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts);"
-fi
-
-# Per-process snapshots (for chart drill-down). Idempotent; existing DBs need it.
-sqlite3 -cmd ".timeout 1500" "$DB" "CREATE TABLE IF NOT EXISTS proc_history (
+# --- One-time schema bootstrap. Marker file keeps this off the hot path:
+#     previously these CREATE/ALTER statements ran sqlite3 5x on every tick. ---
+SCHEMA_MARK="${DB}.schema_mark_v3"
+if [ ! -f "$SCHEMA_MARK" ]; then
+  sqlite3 -cmd ".timeout 1500" "$DB" <<'SQL' 2>/dev/null
+CREATE TABLE IF NOT EXISTS metrics (
+  ts INTEGER PRIMARY KEY,
+  cpu_pct REAL,
+  mem_used_mb INTEGER,
+  mem_total_mb INTEGER,
+  gpu_pct REAL,
+  gpu_mem_mb INTEGER,
+  gpu_temp INTEGER,
+  cpu_temp INTEGER,
+  proc_count INTEGER,
+  disk_pct REAL,
+  net_rx_bytes INTEGER,
+  net_tx_bytes INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts);
+CREATE TABLE IF NOT EXISTS proc_history (
   ts INTEGER PRIMARY KEY,
   procs TEXT NOT NULL
 );
@@ -71,12 +75,14 @@ CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER, type TEXT, app TEXT, publisher TEXT, msg TEXT, read INTEGER DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);" 2>/dev/null
-
-# Add disk usage column to metrics if missing (in place, idempotent).
-sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_pct REAL;" 2>/dev/null || true
-sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_rx_bytes INTEGER;" 2>/dev/null || true
-sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_tx_bytes INTEGER;" 2>/dev/null || true
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+SQL
+  # Legacy DBs predate the disk/net columns; add them if missing.
+  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_pct REAL;" 2>/dev/null || true
+  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_rx_bytes INTEGER;" 2>/dev/null || true
+  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_tx_bytes INTEGER;" 2>/dev/null || true
+  touch "$SCHEMA_MARK"
+fi
 
 D="$DATA_DIR"
 CPU_PRE="$D/.omc_cpu_pre.$$"
@@ -284,7 +290,7 @@ GPU_ENC="0"
 GPU_DEC="0"
 GPU_MEM_CLOCK_MAX="0"
 if command -v nvidia-smi >/dev/null 2>&1; then
-  GPU_LINE=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed,clocks.sm,utilization.encoder,utilization.decoder --format=csv,noheader,nounits 2>/dev/null | sed 's/\[N\/A\]/0/g' | tail -1)
+  GPU_LINE=$(timeout 10 nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed,clocks.sm,utilization.encoder,utilization.decoder --format=csv,noheader,nounits 2>/dev/null | sed 's/\[N\/A\]/0/g' | tail -1)
   if [ -n "$GPU_LINE" ]; then
     GPU_PCT=$(echo "$GPU_LINE" | awk -F',' '{gsub(/ /,"",$1); print $1}')
     GPU_MEM=$(echo "$GPU_LINE" | awk -F',' '{gsub(/ /,"",$2); print $2}')
@@ -295,31 +301,33 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     GPU_CLOCK=$(echo "$GPU_LINE" | awk -F',' '{gsub(/ /,"",$7); print $7}')
     GPU_ENC=$(echo "$GPU_LINE" | awk -F',' '{gsub(/ /,"",$8); print $8}')
     GPU_DEC=$(echo "$GPU_LINE" | awk -F',' '{gsub(/ /,"",$9); print $9}')
-    GPU_SMI_XML=$(nvidia-smi -q -x 2>/dev/null)
-    if [ -n "$GPU_SMI_XML" ]; then
-      GPU_NAME=$(echo "$GPU_SMI_XML" | sed -n '0,/<product_name>/s/.*<product_name>\([^<]*\)<\/product_name>.*/\1/p')
-      GPU_DRIVER=$(echo "$GPU_SMI_XML" | sed -n '0,/<driver_version>/s/.*<driver_version>\([^<]*\)<\/driver_version>.*/\1/p')
-      GPU_POWER_MAX=$(echo "$GPU_SMI_XML" | sed -n '0,/<max_power_limit>/s/.*<max_power_limit>\([0-9.]*\).*/\1/p')
-      GPU_LINK_GEN=$(echo "$GPU_SMI_XML" | sed -n '0,/<current_link_gen>/s/.*<current_link_gen>\([0-9]*\).*/\1/p')
-      GPU_LINK_GEN_MAX=$(echo "$GPU_SMI_XML" | sed -n '0,/<max_link_gen>/s/.*<max_link_gen>\([0-9]*\).*/\1/p')
-      GPU_LINK_WIDTH=$(echo "$GPU_SMI_XML" | sed -n '0,/<current_link_width>/s/.*<current_link_width>\([0-9]*\)x.*/\1/p')
-      GPU_LINK_WIDTH_MAX=$(echo "$GPU_SMI_XML" | sed -n '0,/<max_link_width>/s/.*<max_link_width>\([0-9]*\)x.*/\1/p')
-      GPU_BUS=$(echo "$GPU_SMI_XML" | sed -n '0,/<pci_bus_id>/s/.*<pci_bus_id>00000000:\([0-9a-f]*:[0-9a-f]*\.[0-9]*\)<\/pci_bus_id>.*/0000:\1/p')
-      GPU_ENC=$(echo "$GPU_SMI_XML" | awk '/<encoder_stats>/{sec=1} sec && /<session_count>/{gsub(/[^0-9]/,""); print; exit} /<\/encoder_stats>/{sec=0}')
+    # One -q -x dump per tick; also reused by the GPU process map below.
+    GPUXML="$D/.omc_gpuxml.$$"
+    TMPFILES="$TMPFILES $GPUXML"
+    timeout 10 nvidia-smi -q -x 2>/dev/null > "$GPUXML"
+    if [ -s "$GPUXML" ]; then
+      GPU_NAME=$(sed -n '0,/<product_name>/s/.*<product_name>\([^<]*\)<\/product_name>.*/\1/p' "$GPUXML")
+      GPU_DRIVER=$(sed -n '0,/<driver_version>/s/.*<driver_version>\([^<]*\)<\/driver_version>.*/\1/p' "$GPUXML")
+      GPU_POWER_MAX=$(sed -n '0,/<max_power_limit>/s/.*<max_power_limit>\([0-9.]*\).*/\1/p' "$GPUXML")
+      GPU_LINK_GEN=$(sed -n '0,/<current_link_gen>/s/.*<current_link_gen>\([0-9]*\).*/\1/p' "$GPUXML")
+      GPU_LINK_GEN_MAX=$(sed -n '0,/<max_link_gen>/s/.*<max_link_gen>\([0-9]*\).*/\1/p' "$GPUXML")
+      GPU_LINK_WIDTH=$(sed -n '0,/<current_link_width>/s/.*<current_link_width>\([0-9]*\)x.*/\1/p' "$GPUXML")
+      GPU_LINK_WIDTH_MAX=$(sed -n '0,/<max_link_width>/s/.*<max_link_width>\([0-9]*\)x.*/\1/p' "$GPUXML")
+      GPU_BUS=$(sed -n '0,/<pci_bus_id>/s/.*<pci_bus_id>00000000:\([0-9a-f]*:[0-9a-f]*\.[0-9]*\)<\/pci_bus_id>.*/0000:\1/p' "$GPUXML")
+      GPU_ENC=$(awk '/<encoder_stats>/{sec=1} sec && /<session_count>/{gsub(/[^0-9]/,""); print; exit} /<\/encoder_stats>/{sec=0}' "$GPUXML")
       # Clocks: current from <clocks>, max from <max_clocks> — pull within section
-      GPU_MEM_CLOCK=$(echo "$GPU_SMI_XML" | awk '
+      GPU_MEM_CLOCK=$(awk '
         /<clocks>/ {sec="cur"} /<\/clocks>/ {sec=""; next}
         /<max_clocks>/ {sec="max"} /<\/max_clocks>/ {sec=""; next}
         /<min_clocks>/ {sec="min"} /<\/min_clocks>/ {sec=""; next}
-        sec=="cur" && /<mem_clock>/ {gsub(/[^0-9]/,""); print; exit}')
-      GPU_MEM_CLOCK_MAX=$(echo "$GPU_SMI_XML" | awk '
+        sec=="cur" && /<mem_clock>/ {gsub(/[^0-9]/,""); print; exit}' "$GPUXML")
+      GPU_MEM_CLOCK_MAX=$(awk '
         /<max_clocks>/ {sec="max"; next} /<\/max_clocks>/ {sec=""; next}
-        sec=="max" && /<mem_clock>/ {gsub(/[^0-9]/,""); print; exit}')
-      GPU_GRAPHICS_CLOCK=$(echo "$GPU_SMI_XML" | awk '
+        sec=="max" && /<mem_clock>/ {gsub(/[^0-9]/,""); print; exit}' "$GPUXML")
+      GPU_GRAPHICS_CLOCK=$(awk '
         /<max_clocks>/ {sec="max"; next} /<\/max_clocks>/ {sec=""; next}
-        sec=="max" && /<graphics_clock>/ {gsub(/[^0-9]/,""); print; exit}')
+        sec=="max" && /<graphics_clock>/ {gsub(/[^0-9]/,""); print; exit}' "$GPUXML")
     fi
-    unset GPU_SMI_XML
   fi
 fi
 
@@ -365,8 +373,14 @@ GPU_PROC_MAP="$D/.omc_gpu_proc.$$"
 TMPFILES="$TMPFILES $GPU_PROC_MAP"
 # nvidia-smi only lists compute contexts via --query-compute-apps (usually
 # empty), so parse the XML process table which includes graphical processes.
+# Reuses the -q -x dump written by the GPU block above (one smi XML per tick).
 if command -v nvidia-smi >/dev/null 2>&1; then
-  nvidia-smi -q -x 2>/dev/null | awk '
+  if [ -z "$GPUXML" ] || [ ! -s "$GPUXML" ]; then
+    GPUXML="$D/.omc_gpuxml.$$"
+    TMPFILES="$TMPFILES $GPUXML"
+    timeout 10 nvidia-smi -q -x 2>/dev/null > "$GPUXML"
+  fi
+  [ -s "$GPUXML" ] && awk '
     /<process_info>/ { inproc=1 }
     inproc && /<pid>/ { gsub(/[^0-9]/, "", $0); pidname=$0 }
     inproc && /<used_memory>/ {
@@ -374,7 +388,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
       if (pidname != "") { print pidname, mem }
       inproc=0
     }
-  ' > "$GPU_PROC_MAP"
+  ' "$GPUXML" > "$GPU_PROC_MAP"
 fi
 
 # --- Per-process disk I/O rate (KB/s, from the 0.2s window) ---
@@ -400,8 +414,27 @@ PROCS=$(awk '
   }' gpumap="$GPU_PROC_MAP" swapmap="$PROC_SWAP" ratemap="$PROC_IO_RATE" \
   gpu_total="$GPU_MEM_TOTAL" "$GPU_PROC_MAP" "$PROC_SWAP" "$PROC_IO_RATE" "$PS_FILE")
 
-# --- Store sample in DB ---
-sqlite3 -cmd ".timeout 1500" "$DB" "INSERT OR REPLACE INTO metrics (ts, cpu_pct, mem_used_mb, mem_total_mb, gpu_pct, gpu_temp, cpu_temp, proc_count, disk_pct, net_rx_bytes, net_tx_bytes) VALUES ($NOW, $CPU_PCT, $MEM_USED_MB, $MEM_TOTAL_MB, $GPU_PCT, $GPU_TEMP, $CPU_TEMP, $PROC_COUNT, $DISK_MAX_PCT, $NET_TOT_RX, $NET_TOT_TX);"
+# --- Persist sample, prune old data, and record metric spikes all in ONE
+#     sqlite3 call (was 5 separate invocations per tick). ---
+SQL="INSERT OR REPLACE INTO metrics (ts, cpu_pct, mem_used_mb, mem_total_mb, gpu_pct, gpu_temp, cpu_temp, proc_count, disk_pct, net_rx_bytes, net_tx_bytes) VALUES ($NOW, $CPU_PCT, $MEM_USED_MB, $MEM_TOTAL_MB, $GPU_PCT, $GPU_TEMP, $CPU_TEMP, $PROC_COUNT, $DISK_MAX_PCT, $NET_TOT_RX, $NET_TOT_TX);
+DELETE FROM metrics WHERE ts < $NOW - 604800;
+DELETE FROM proc_history WHERE ts < $NOW - 86400;
+DELETE FROM events WHERE ts < $NOW - 1209600;"
+
+# Metric-spike events (persistent log for the Events tab).
+SPC=$(printf "%d" "${CPU_PCT%.*}" 2>/dev/null); [ -z "$SPC" ] && SPC=0
+if [ "$SPC" -ge 95 ]; then
+  SQL="$SQL
+INSERT INTO events (ts, type, app, publisher, msg) VALUES ($NOW, 'cpu_spike', '', '', 'CPU peaked at $CPU_PCT%');"
+fi
+SMM=$((MEM_TOTAL_KB > 0 ? (MEM_TOTAL_KB - MEM_AVAIL_KB) * 100 / MEM_TOTAL_KB : 0))
+if [ "$SMM" -ge 92 ]; then
+  SQL="$SQL
+INSERT INTO events (ts, type, app, publisher, msg) VALUES ($NOW, 'mem_spike', '', '', 'Memory peaked at $SMM%');"
+fi
+sqlite3 -cmd ".timeout 1500" "$DB" <<SQL 2>/dev/null
+$SQL
+SQL
 
 # --- Persist per-process snapshot once per minute (chart drill-down) + refresh
 #     app metadata (publisher/verified/desc; cached in app_meta) ---
@@ -434,27 +467,10 @@ if [ "$PROC_MIN" -gt "$LAST_PROCMIN" ]; then
   echo "$PROC_MIN" > "$DATA_DIR/.omc_proc_min"
 fi
 
-# --- History: downsampled averages for chart ---
-HISTORY_1H=$(sqlite3 -cmd ".timeout 1500" "$DB" "
-  SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem', mem, 'gpu', gpu, 'gtemp', gtemp, 'ctemp', ctemp)) || ']'
-  FROM (SELECT (ts/60)*60 as ts, avg(cpu_pct) as cpu, avg(mem_used_mb) as mem, avg(gpu_pct) as gpu, avg(gpu_temp) as gtemp, avg(cpu_temp) as ctemp
-  FROM metrics WHERE ts > $NOW - 3600 GROUP BY ts/60 ORDER BY ts);
-" 2>/dev/null)
-[ -z "$HISTORY_1H" ] && HISTORY_1H="[]"
-
-HISTORY_6H=$(sqlite3 -cmd ".timeout 1500" "$DB" "
-  SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem', mem, 'gpu', gpu, 'gtemp', gtemp, 'ctemp', ctemp)) || ']'
-  FROM (SELECT (ts/300)*300 as ts, avg(cpu_pct) as cpu, avg(mem_used_mb) as mem, avg(gpu_pct) as gpu, avg(gpu_temp) as gtemp, avg(cpu_temp) as ctemp
-  FROM metrics WHERE ts > $NOW - 21600 GROUP BY ts/300 ORDER BY ts);
-" 2>/dev/null)
-[ -z "$HISTORY_6H" ] && HISTORY_6H="[]"
-
-HISTORY_24H=$(sqlite3 -cmd ".timeout 1500" "$DB" "
-  SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem', mem, 'gpu', gpu, 'gtemp', gtemp, 'ctemp', ctemp)) || ']'
-  FROM (SELECT (ts/300)*300 as ts, avg(cpu_pct) as cpu, avg(mem_used_mb) as mem, avg(gpu_pct) as gpu, avg(gpu_temp) as gtemp, avg(cpu_temp) as ctemp
-  FROM metrics WHERE ts > $NOW - 86400 GROUP BY ts/300 ORDER BY ts);
-" 2>/dev/null)
-[ -z "$HISTORY_24H" ] && HISTORY_24H="[]"
+# --- Downsampled history rolls moved out of the collector: collect.sh runs on
+#     a 2s tick and its history_1h/6h/24h were only consumed by the deleted
+#     Panel.qml. The app window now recomputes its own rolls at 30s intervals
+#     via sample-json.sh (cached on disk), so nothing here queries the table.
 
 # --- New-app detection ---
 SEEN_FILE="$DATA_DIR/apps_seen"
@@ -504,22 +520,7 @@ RECENT_APPS=$(tail -20 "$NEWAPPS_LOG" | tail -5 | awk '{printf "{\"name\":\"%s\"
 
 rm -f "$DATA_DIR/.cur_names.$$" "$DATA_DIR/.new_names.$$" "$DATA_DIR/.promote.$$" "$DATA_DIR/.fresh.$$"
 
-# --- Prune data older than 7 days ---
-sqlite3 "$DB" "DELETE FROM metrics WHERE ts < $NOW - 604800;" 2>/dev/null
-# Per-process snapshots only need to span the 24h chart window.
-sqlite3 "$DB" "DELETE FROM proc_history WHERE ts < $NOW - 86400;" 2>/dev/null
-# Neighbourhood of events only needs to span the visible tooling window.
-sqlite3 "$DB" "DELETE FROM events WHERE ts < $NOW - 1209600;" 2>/dev/null
-
-# --- Metric-spike events (persistent log for the Events tab) ---
-SPC=$(printf "%d" "${CPU_PCT%.*}" 2>/dev/null); [ -z "$SPC" ] && SPC=0
-if [ "$SPC" -ge 95 ]; then
-  printf "INSERT INTO events (ts, type, app, publisher, msg) VALUES ($NOW, 'cpu_spike', '', '', 'CPU peaked at %s%%');\n" "$CPU_PCT" | sqlite3 -cmd ".timeout 1500" "$DB" 2>/dev/null
-fi
-SMM=$((MEM_TOTAL_KB > 0 ? (MEM_TOTAL_KB - MEM_AVAIL_KB) * 100 / MEM_TOTAL_KB : 0))
-if [ "$SMM" -ge 92 ]; then
-  printf "INSERT INTO events (ts, type, app, publisher, msg) VALUES ($NOW, 'mem_spike', '', '', 'Memory peaked at %s%%');\n" "$SMM" | sqlite3 -cmd ".timeout 1500" "$DB" 2>/dev/null
-fi
+# Prunes and metric-spike events are folded into the single sqlite3 call above.
 
 # --- Output JSON ---
 cat <<ENDJSON
@@ -580,9 +581,6 @@ cat <<ENDJSON
   "proc_count": $PROC_COUNT,
   "ts": $NOW,
   "processes": [$PROCS],
-  "history_1h": $HISTORY_1H,
-  "history_6h": $HISTORY_6H,
-  "history_24h": $HISTORY_24H,
   "new_apps": $NEW_APPS,
   "recent_apps": $RECENT_APPS
 }
