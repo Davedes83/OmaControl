@@ -51,10 +51,6 @@ BarWidget {
     collectProc.running = true
   }
 
-  function togglePanel() {
-    if (panelLoader.item) panelLoader.item.toggle()
-  }
-
   function open() {
     if (appLoader.item) appLoader.item.open = true
   }
@@ -78,10 +74,6 @@ BarWidget {
     root.appTab(tab)
   }
 
-  function openDetail(name) {
-    if (panelLoader.item && "openDetail" in panelLoader.item) panelLoader.item.openDetail(name)
-  }
-
   function openApp() {
     if (appLoader.item) appLoader.item.open = true
   }
@@ -91,17 +83,19 @@ BarWidget {
   readonly property real openPanelIndicatorWidth: button.labelWidth
   readonly property real openPanelIndicatorHeight: Math.max(Style.space(10), Math.round(Style.bar.iconSlot * 0.55))
 
-  function injectPanel() {
-    var target = panelLoader.item
-    if (!target) return
-    if ("bar" in target) target.bar = root.bar
-    if ("settings" in target) target.settings = root.settings
-    if ("anchorItem" in target) target.anchorItem = button
-    if ("hostWidget" in target) target.hostWidget = root
+  function enforceRules() {
+    if (!enforceProc.running) enforceProc.running = true
   }
 
-  onBarChanged: injectPanel()
-  onSettingsChanged: injectPanel()
+  function onEnforce(text) {
+    root.refresh()
+    var killed = 0
+    try {
+      var d = JSON.parse(text)
+      killed = (d.killed || []).length
+    } catch (e) {}
+    root.notify("OmaControl", "Enforced rules — " + killed + " process(es) matched", "normal")
+  }
 
   // ---- Desktop notifications
 
@@ -146,20 +140,6 @@ BarWidget {
   }
 
   Loader {
-    id: panelLoader
-    active: true
-    source: Qt.resolvedUrl("Panel.qml")
-    visible: false
-    onStatusChanged: {
-      if (status === Loader.Error) console.log("OMC PANEL LOAD ERROR: " + (typeof errorString === "function" ? errorString() : "?"))
-    }
-    onLoaded: {
-      root.injectPanel()
-      Qt.callLater(root.injectPanel)
-    }
-  }
-
-  Loader {
     id: appLoader
     active: true
     source: Qt.resolvedUrl("AppWindow.qml")
@@ -188,34 +168,23 @@ BarWidget {
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
     function openTab(tab: int): void { root.openTab(tab !== null ? Number(tab) : 0) }
-    function openDetail(name: string): void {
-      if (name !== null && panelLoader.item && "openDetail" in panelLoader.item) panelLoader.item.openDetail(String(name))
-    }
-    function kill(pid: int): void {
-      if (pid !== null && panelLoader.item && "killProcess" in panelLoader.item) {
-        panelLoader.item.killProcess(Number(pid))
-      }
-    }
     function setBarStats(stats: string): void {
       if (stats !== null) root.setBarStats(String(stats).split(",").map(function(s) { return s.trim() }).filter(function(s) { return s }))
     }
     function setBarStatMode(mode: string): void {
       if (mode !== null) root.setBarStatMode(String(mode))
     }
+    function enforce(): void { root.enforceRules() }
     function state(): string {
-      var p = panelLoader.item
       return JSON.stringify({
-        panelLoaded: !!p,
-        loaderStatus: panelLoader.status,
+        ready: root.ready,
         opened: root.opened,
-        detailView: p && "detailView" in p ? p.detailView : null,
-        chartDrillTs: p && "chartDrillTs" in p ? p.chartDrillTs : null,
-        appWindow: appLoader.item ? appLoader.item.open === true : false
+        alert: root.alert,
+        appWindow: appLoader.item ? appLoader.item.open === true : false,
+        activeTab: appLoader.item ? appLoader.item.activeTab : 0,
+        barStats: root.barStats || [],
+        barStatMode: root.barStatMode || "icon"
       })
-    }
-    function debugDrill(ts: real, series: string) {
-      var p = panelLoader.item
-      if (p && "openChartDrill" in p) p.openChartDrill(Number(ts), String(series))
     }
     function openApp(): void {
       if (appLoader.item) appLoader.item.open = true
@@ -247,6 +216,15 @@ BarWidget {
           root.lastError = "parse error"
         }
       }
+    }
+  }
+
+  Process {
+    id: enforceProc
+    command: ["sh", "-c", "sh " + Qt.resolvedUrl("backend/enforce.sh").toString().replace("file://", "")]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onEnforce(text)
     }
   }
 
@@ -314,10 +292,6 @@ BarWidget {
     var parsed = Model.parsePrivacy(text)
     root.setPrivacyAlertFrom(parsed.devices)
     root.privacyEvents = parsed.events
-    var p = panelLoader.item
-    if (p && "onPrivacyData" in p) {
-      p.onPrivacyData(parsed)
-    }
   }
 
   function setPrivacyAlertFrom(devices) {
@@ -461,8 +435,7 @@ BarWidget {
         label: "Enforce rules"
         action: function() {
           contextMenu.dismiss()
-          if (panelLoader.item && "enforceRules" in panelLoader.item) panelLoader.item.enforceRules()
-          root.notify("OmaControl", "Enforced all rules from the current rules tab", "normal")
+          root.enforceRules()
         }
       }
       MenuItem {
