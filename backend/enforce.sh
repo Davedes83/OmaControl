@@ -29,7 +29,9 @@ log_block() {
 }
 
 TMP=$(mktemp /tmp/omc_rules.XXXXXX)
-trap 'rm -f "$TMP"' EXIT
+KFILE=$(mktemp /tmp/omc_killed.XXXXXX)
+EFILE=$(mktemp /tmp/omc_errors.XXXXXX)
+trap 'rm -f "$TMP" "$KFILE" "$EFILE"' EXIT INT TERM
 
 python3 - "$RULES_FILE" > "$TMP" <<'PY'
 import json, sys
@@ -48,7 +50,7 @@ for r in data.get("rules", []):
         print(f"{kind}|{r.get('action')}|{pat}")
 PY
 
-OUT=$(grep -v '^$' "$TMP" | sed 's/\r$//' | while IFS='|' read -r kind action pattern; do
+grep -v '^$' "$TMP" | sed 's/\r$//' | while IFS='|' read -r kind action pattern; do
   [ -z "$pattern" ] && continue
 
   if [ "$kind" = "service" ]; then
@@ -56,9 +58,7 @@ OUT=$(grep -v '^$' "$TMP" | sed 's/\r$//' | while IFS='|' read -r kind action pa
       systemctl --user mask "$pattern" >/dev/null 2>&1
       systemctl --user stop "$pattern" >/dev/null 2>&1
     fi
-    ENTRY="{\"unit\":\"$pattern\",\"masked\":\"yes\"}"
-    if [ -n "$KILLED" ]; then KILLED="$KILLED,"; fi
-    KILLED="$KILLED$ENTRY"
+    printf '%s\n' "{\"unit\":\"$pattern\",\"masked\":\"yes\"}" >> "$KFILE"
     continue
   fi
 
@@ -87,16 +87,14 @@ OUT=$(grep -v '^$' "$TMP" | sed 's/\r$//' | while IFS='|' read -r kind action pa
       log_block "$pid" "$NAME" "$pattern"
     fi
     if [ "$RESULT" -eq 0 ]; then
-      ENTRY="{\"pid\":$pid,\"name\":\"$NAME\",\"pattern\":\"$pattern\"}"
-      if [ -n "$KILLED" ]; then KILLED="$KILLED,"; fi
-      KILLED="$KILLED$ENTRY"
+      printf '%s\n' "{\"pid\":$pid,\"name\":\"$NAME\",\"pattern\":\"$pattern\"}" >> "$KFILE"
     else
-      ENTRY="{\"pid\":$pid,\"name\":\"$NAME\",\"error\":\"kill failed\"}"
-      if [ -n "$ERRORS" ]; then ERRORS="$ERRORS,"; fi
-      ERRORS="$ERRORS$ENTRY"
+      printf '%s\n' "{\"pid\":$pid,\"name\":\"$NAME\",\"error\":\"kill failed\"}" >> "$EFILE"
     fi
   done
-done)
+done
+KILLED_LIST="$(paste -sd, "$KFILE" 2>/dev/null)"
+ERRORS_LIST="$(paste -sd, "$EFILE" 2>/dev/null)"
 cat <<ENDJSON
-{"killed":[$KILLED],"errors":[$ERRORS]}
+{"killed":[$KILLED_LIST],"errors":[$ERRORS_LIST]}
 ENDJSON
