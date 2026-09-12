@@ -58,6 +58,7 @@ PREF_PATH = os.environ.get(
 TOAST_TYPE = {
     "event": {
         "app_launch": "New App Launch",
+        "app_exit": "App Exit",
         "unsigned_launch": "Unsigned App Launch",
         "publisher_block": "Unsigned App Launch",
         "unknown_app": "Unsigned App Launch",
@@ -75,6 +76,7 @@ TOAST_TYPE = {
 
 TOAST_SUMMARY = {
     "New App Launch": "New app launched",
+    "App Exit": "App closed",
     "Mic or Cam Access": "Mic or camera in use",
     "Location Tracking": "Location accessed",
     "Unsigned App Launch": "Unsigned app launched",

@@ -34,11 +34,11 @@ MEM=$((MEM_USED * 100 / MEM_TOTAL))
 # History rolls with disk + network included (net rates derived from
 # cumulative byte counters: delta bytes / delta seconds / 1024 = KB/s).
 # The app window polls this every 4s, but the chart is downsampled to
-# 60s/300s/900s buckets — so rolls are recomputed at most every 30s and
+# 10s/300s/900s buckets — so rolls are recomputed at most every 30s and
 # cached on disk; the cache is also the source between recomputes.
 ROLL_BASE="${DB}.rolls"
 ROLL_STAMP="$ROLL_BASE.stamp"
-ROLL_CACHE="$ROLL_BASE.v2"
+ROLL_CACHE="$ROLL_BASE.v3"
 ROLLS_LAST=0
 [ -f "$ROLL_STAMP" ] && ROLLS_LAST=$(cat "$ROLL_STAMP" 2>/dev/null || echo 0)
 ROLLS_AGE=$((NOW - ${ROLLS_LAST:-0}))
@@ -53,22 +53,22 @@ if [ "$ROLLS_AGE" -lt 30 ] && [ -f "$ROLL_CACHE" ]; then
 else
   ROLLS_OUT=$(sqlite3 -cmd ".timeout 3000" "$DB" <<SQL 2>/dev/null
 SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx, 'ctemp', ctemp, 'gtemp', gtemp)) || ']'
-FROM (SELECT (ts/60)*60 as ts, avg(cpu_pct) as cpu,
+FROM (SELECT (ts/10)*10 as ts, avg(cpu_pct) as cpu,
              round(avg(mem_used_mb) * 100.0 / avg(mem_total_mb)) as mem,
              avg(gpu_pct) as gpu, round(avg(proc_count)) as procs,
              round(avg(disk_pct)) as disk,
              avg(cpu_temp) as ctemp, avg(gpu_temp) as gtemp,
-             round((max(net_rx_bytes) - min(net_rx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as rx,
-             round((max(net_tx_bytes) - min(net_tx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as tx
-      FROM metrics WHERE ts > $NOW - 3600 GROUP BY ts/60 ORDER BY ts);
+             (max(net_rx_bytes) - min(net_rx_bytes)) / nullif(max(ts) - min(ts), 0) / 1024 as rx,
+             (max(net_tx_bytes) - min(net_tx_bytes)) / nullif(max(ts) - min(ts), 0) / 1024 as tx
+      FROM metrics WHERE ts > $NOW - 3600 GROUP BY ts/10 ORDER BY ts);
 SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx, 'ctemp', ctemp, 'gtemp', gtemp)) || ']'
 FROM (SELECT (ts/300)*300 as ts, avg(cpu_pct) as cpu,
              round(avg(mem_used_mb) * 100.0 / avg(mem_total_mb)) as mem,
              avg(gpu_pct) as gpu, round(avg(proc_count)) as procs,
              round(avg(disk_pct)) as disk,
              avg(cpu_temp) as ctemp, avg(gpu_temp) as gtemp,
-             round((max(net_rx_bytes) - min(net_rx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as rx,
-             round((max(net_tx_bytes) - min(net_tx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as tx
+             round((max(net_rx_bytes) - min(net_rx_bytes)) / nullif(max(ts) - min(ts), 0) / 1024) as rx,
+             round((max(net_tx_bytes) - min(net_tx_bytes)) / nullif(max(ts) - min(ts), 0) / 1024) as tx
       FROM metrics WHERE ts > $NOW - 21600 GROUP BY ts/300 ORDER BY ts);
 SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx, 'ctemp', ctemp, 'gtemp', gtemp)) || ']'
 FROM (SELECT (ts/900)*900 as ts, avg(cpu_pct) as cpu,
@@ -76,8 +76,8 @@ FROM (SELECT (ts/900)*900 as ts, avg(cpu_pct) as cpu,
              avg(gpu_pct) as gpu, round(avg(proc_count)) as procs,
              round(avg(disk_pct)) as disk,
              avg(cpu_temp) as ctemp, avg(gpu_temp) as gtemp,
-             round((max(net_rx_bytes) - min(net_rx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as rx,
-             round((max(net_tx_bytes) - min(net_tx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as tx
+             round((max(net_rx_bytes) - min(net_rx_bytes)) / nullif(max(ts) - min(ts), 0) / 1024) as rx,
+             round((max(net_tx_bytes) - min(net_tx_bytes)) / nullif(max(ts) - min(ts), 0) / 1024) as tx
       FROM metrics WHERE ts > $NOW - 86400 GROUP BY ts/900 ORDER BY ts);
 SQL
 )
@@ -146,6 +146,11 @@ for row in con.execute("SELECT name, publisher, verified, source, desc, exe, pkg
                     "source": row[3] or "unknown", "desc": row[4] or "",
                     "exe": row[5] or "", "pkg": row[6] or ""}
 
+def norm(n):
+    return (n or "unknown").lower()
+
+mnorm = {norm(k): v for k, v in meta.items()}
+
 disabled = json.loads(os.environ.get("OMC_DISABLED", "[]"))
 
 # ---- current permission badges (from privacy_state.json: dev|pid|name)
@@ -169,7 +174,7 @@ except Exception:
 def enrich(names):
     out = {}
     for nm in names:
-        m = meta.get(nm, {})
+        m = mnorm.get(nm, {})
         out[nm] = {
             "publisher": m.get("publisher", "Unknown"),
             "verified": m.get("verified", 0),
@@ -196,9 +201,6 @@ for ts, payload in sorted(rows):
     snaps.append({"ts": ts, "procs": arr})
 p_list0 = snaps[-1]["procs"] if snaps else []
 
-def norm(n):
-    return (n or "unknown").lower()
-
 # ---- flatten p_list entries (enrich with meta/perms/disabled + instance count)
 counts = defaultdict(int)
 for p in p_list0:
@@ -206,7 +208,7 @@ for p in p_list0:
 p_list = []
 for p in p_list0:
     nm = norm(p.get("name"))
-    m = meta.get(nm, {})
+    m = mnorm.get(nm, {})
     pp = dict(p)
     pp["name"] = p.get("name") or "unknown"
     pp["publisher"] = m.get("publisher", "Unknown")
@@ -229,7 +231,8 @@ for snap in snaps:
 for p in p_list:
     nm = norm(p.get("name"))
     g = groups.setdefault(nm, {"name": p.get("name") or "unknown", "cpu": 0.0,
-                               "mem": 0.0, "io": 0.0, "gpu": 0.0, "pids": []})
+                               "mem": 0.0, "io": 0.0, "gpu": 0.0, "pids": [],
+                               "running": True})
     g["cpu"] += p.get("cpu") or 0
     g["mem"] += p.get("mem") or 0
     g["io"] += p.get("io_kbs") or 0
@@ -253,7 +256,7 @@ running_names = {norm(p.get("name")) for p in p_list0}
 installed = 0
 catalog = []
 for nm, m in sorted(meta.items()):
-    if m.get("publisher") in ("Unknown", "") or m.get("source") in ("system", ""):
+    if m.get("publisher") in ("Unknown", "") or m.get("source") in (""):
         continue
     inst = {}
     inst["name"] = nm
@@ -264,7 +267,7 @@ for nm, m in sorted(meta.items()):
     inst["exe"] = m.get("exe", "")
     inst["pkg"] = m.get("pkg", "")
     inst["disabled"] = nm in disabled
-    inst["running"] = nm in running_names
+    inst["running"] = norm(nm) in running_names
     inst["perms"] = perms.get(nm, [])
     catalog.append(inst)
     installed += 1
@@ -314,7 +317,7 @@ try:
         kind = {"camera": "cam_access", "microphone": "mic_access", "location": "location_access"}.get(device, "permission")
         label = {"camera": "camera", "microphone": "microphone", "location": "location"}.get(device, device)
         events.append({"id": _id, "ts": ts, "kind": kind, "app": name or "",
-                       "publisher": meta.get(norm(name), {}).get("publisher", "Unknown"),
+                       "publisher": mnorm.get(norm(name), {}).get("publisher", "Unknown"),
                        "msg": f"{name or 'App'} {'started' if action=='start' else 'stopped'} using the {label}",
                        "read": 1 if ts <= lastread else 0})
 except Exception:

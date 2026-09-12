@@ -16,6 +16,21 @@ BarWidget {
   property var privacyEvents: []
   property var barStats: ["cpu", "cputemp"]
   property string barStatMode: "icon"
+  property bool barShowBell: true
+  property int unreadCount: 0
+  property string bellColorToken: "dim"
+
+  // Color matches the event-kind hue used for chart markers (HistoryGraph.evColor).
+  readonly property color bellColor: {
+    switch (root.bellColorToken) {
+      case "danger": return root.bar && root.bar.urgent ? root.bar.urgent : Color.urgent
+      case "green": return Qt.rgba(0.24, 0.7, 0.44, 1)
+      case "accent": return Color.accent
+      default: return root.bar && root.bar.foreground ? root.bar.foreground : Color.foreground
+    }
+  }
+
+  readonly property bool bellActive: root.barShowBell && root.unreadCount > 0
 
   readonly property bool ready: lastData !== null
   readonly property real cpuPct: ready ? lastData.cpu_pct : 0
@@ -39,8 +54,9 @@ BarWidget {
           : (root.barStatMode === "icon" ? Model.barStatGlyph(list[i]) : "")
       parts.push(lead ? lead + " " + v : v)
     }
-    if (parts.length === 0) return icon.trim()
-    return icon + parts.join("  ")
+    var prefix = (root.barShowBell && root.unreadCount > 0) ? "󰂞 " + root.unreadCount + " " : ""
+    if (parts.length === 0) return (prefix + icon).trim()
+    return prefix + icon + parts.join("  ")
   }
 
   function refresh() {
@@ -118,6 +134,7 @@ BarWidget {
     barStatsLoadProc.running = true
     refresh()
     privacyProc.running = true
+    unreadProc.running = true
   }
 
   IpcHandler {
@@ -218,6 +235,7 @@ BarWidget {
       onStreamFinished: {
         try {
           var parsed = JSON.parse(text)
+          if (parsed && parsed.barShowBell !== undefined) root.barShowBell = parsed.barShowBell === true
           if (Array.isArray(parsed)) {
             root.barStats = parsed
           } else if (parsed && parsed.stats) {
@@ -230,7 +248,7 @@ BarWidget {
   }
 
   function saveBarPrefs() {
-    var json = JSON.stringify({ stats: root.barStats, mode: root.barStatMode })
+    var json = JSON.stringify({ stats: root.barStats, mode: root.barStatMode, barShowBell: root.barShowBell })
     var safe = json.replace(/'/g, "'\\''")
     barStatsSaveProc.command = ["sh", "-c", "mkdir -p '" + root.dataDir + "' && printf '%s' '" + safe + "' > '" + root.barStatsPath + "'"]
     barStatsSaveProc.running = false
@@ -269,6 +287,24 @@ BarWidget {
     root.privacyDevices = devices || []
   }
 
+  Process {
+    id: unreadProc
+    command: ["sh", Qt.resolvedUrl("backend/unread.sh").toString().replace("file://", "")]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var d = JSON.parse(text)
+          root.unreadCount = d && d.count ? Number(d.count) : 0
+          root.bellColorToken = d && d.color ? String(d.color) : "dim"
+        } catch (e) {
+          root.unreadCount = 0
+          root.bellColorToken = "dim"
+        }
+      }
+    }
+  }
+
   Timer {
     interval: 2000
     running: true
@@ -278,6 +314,7 @@ BarWidget {
       root.refresh()
       privacyProc.running = true
       barStatsLoadProc.running = true
+      if (root.barShowBell) unreadProc.running = true
     }
   }
 
@@ -291,7 +328,8 @@ BarWidget {
     bar: root.bar
     text: root.label
     fontSize: Style.font.caption
-    active: root.alert
+    active: root.alert || root.bellActive
+    activeColor: root.alert ? (root.bar && root.bar.urgent ? root.bar.urgent : Color.urgent) : root.bellColor
     tooltipText: {
       if (!root.ready) return "OmaControl — loading..."
       var tip = "OmaControl\n"

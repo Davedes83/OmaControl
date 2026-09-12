@@ -14,8 +14,9 @@ if [ -z "$NAME" ] || [ ! -f "$DB" ]; then
 fi
 
 LC_ALL=C NAME="$NAME" python3 - "$DB" <<'PY'
-import json, sqlite3, sys
-db, name = sys.argv[1], __import__("os").environ["NAME"]
+import json, os, sqlite3, sys
+db, name = sys.argv[1], os.environ["NAME"]
+cores = os.cpu_count() or 1
 con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
 agg = {}
 for (ts, procs,) in con.execute("SELECT ts, procs FROM proc_history ORDER BY ts"):
@@ -44,6 +45,7 @@ if not agg.get("samples"):
 n = agg["samples"]
 out = {
     "name": name,
+    "cores": cores,
     "samples": n,
     "first_ts": agg.get("first_ts"),
     "last_ts": agg.get("last_ts"),

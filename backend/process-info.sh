@@ -80,6 +80,21 @@ case "$NAME" in
   discord) DESC="Discord — voice/text chat application." ;;
   spotify) DESC="Spotify — music streaming application." ;;
   steam) DESC="Steam — Valve's gaming platform and store." ;;
+  # Kernel threads (no userspace binary)
+  kworker) DESC="Kernel worker thread — runs deferred background work on CPU workqueues." ;;
+  kworker/*) DESC="Kernel workqueue thread — performs deferred background I/O and cleanup work for the kernel; the part after kworker/ names the workqueue." ;;
+  kswapd*) DESC="Kernel swap daemon — reclaims memory pages when the system is under memory pressure." ;;
+  ksoftirqd*) DESC="Kernel softirq thread — processes deferred software interrupts." ;;
+  kcompactd*) DESC="Kernel memory-compaction daemon — defragments memory for large allocations." ;;
+  khugepaged) DESC="Kernel hugepage daemon — promotes regular pages into huge pages." ;;
+  kthreadd) DESC="Kernel thread forker — spawns and supervises all other kernel threads." ;;
+  kblockd) DESC="Kernel block-layer worker — processes block device request queues." ;;
+  jbd2/*|kjournald*) DESC="Filesystem journaling thread — writes journal transactions (ext4/btrfs) for crash safety." ;;
+  kcryptd|dmcrypt_write*) DESC="Device-mapper crypt worker — performs on-the-fly disk encryption/decryption." ;;
+  oom_reaper) DESC="OOM killer reaper — reaps processes the out-of-memory killer condemned." ;;
+  migration/*) DESC="Per-CPU migration thread — moves tasks between CPUs for load balancing." ;;
+  watchdog/*) DESC="Per-CPU watchdog thread — drives the hardware watchdog timer." ;;
+  rcu*) DESC="RCU kernel worker — coordinates grace periods and reclaims kernel memory." ;;
   *) DESC="" ;;
 esac
 

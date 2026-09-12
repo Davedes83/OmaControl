@@ -26,7 +26,7 @@ elif [ "$ACTION" = "read-all" ]; then
   date +%s > "$DATA_DIR/events_lastread_ts" 2>/dev/null
   echo ok
 elif [ "$ACTION" = "clear" ]; then
-  sqlite3 -cmd ".timeout 3000" "$DB" "DELETE FROM events;" 2>/dev/null
+  sqlite3 -cmd ".timeout 3000" "$DB" "DELETE FROM events; DELETE FROM privacy_events;" 2>/dev/null
   date +%s > "$DATA_DIR/events_lastread_ts" 2>/dev/null
   echo ok
 else

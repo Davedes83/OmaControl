@@ -11,7 +11,9 @@ DB="${OMCONTROL_DB:-$DATA_DIR/history.db}"
 NOW=$(date +%s)
 
 # Prune stale temp files from past invocations that got killed mid-run.
-find "$DATA_DIR" -maxdepth 1 -name '.omc_*' -mmin +30 -delete 2>/dev/null
+find "$DATA_DIR" -maxdepth 1 -mmin +30 \
+  \( -name '.omc_*' -o -name '.cur_names.*' -o -name '.new_names.*' \
+     -o -name '.promote.*' -o -name '.fresh.*' -o -name '.seen.*' \) -delete 2>/dev/null
 
 # --- Toast notifications are fired from sql-ins.py (single choke point),
 #     which reads alert_prefs.json itself; nothing here needs the file. ---
@@ -72,10 +74,14 @@ PS_FILE="$D/.omc_ps.$$"
 PROC_IO_PRE="$D/.omc_proc_io_pre.$$"
 PROC_IO_POST="$D/.omc_proc_io_post.$$"
 PROC_SWAP="$D/.omc_proc_swap.$$"
-TMPFILES="$CPU_PRE $CPU_POST $DS_PRE $DS_POST $NET_PRE $NET_POST $DISKIO $DF_FILE $PS_FILE $PROC_IO_PRE $PROC_IO_POST $PROC_SWAP"
+TMPFILES="$CPU_PRE $CPU_POST $DS_PRE $DS_POST $NET_PRE $NET_POST $DISKIO $DF_FILE $PS_FILE $PROC_IO_PRE $PROC_IO_POST $PROC_SWAP $DATA_DIR/.cur_names.$$ $DATA_DIR/.new_names.$$ $DATA_DIR/.promote.$$ $DATA_DIR/.fresh.$$ $DATA_DIR/.seen.$$"
 trap 'rm -f $TMPFILES' EXIT INT TERM
 
 # --- Top 20 processes by CPU (snapshot once; used for per-proc IO + swap) ---
+# pcpu from ps is thread-summed and can exceed 100% (e.g. 300% = 3 cores of
+# work). Divide by the core count so every surface reports average CPU across
+# cores instead — 100% = one core fully busy.
+NCORES=$(nproc 2>/dev/null || echo 1)
 ps -eo pid,pcpu,pmem,comm --sort=-pcpu --no-headers | head -20 > "$PS_FILE"
 
 # --- Per-process I/O baseline (read+write bytes) so the same 0.2s window
@@ -412,14 +418,15 @@ PROCS=$(awk '
   FILENAME == ratemap { rate[$1]=$2; next }
   {
     gsub(/[<>\x00-\x1F\x7F]/, " ", $4)
+    c = (ncores > 0) ? $2 / ncores : $2
     g = ($1 in gpu) ? gpu[$1] : 0
     gpct = (g > 0 && gpu_total > 0) ? g * 100 / gpu_total : 0
     swm = ($1 in swap) ? swap[$1] / 1024 : 0
     ior = ($1 in rate) ? rate[$1] : 0
-    printf "{\"pid\":%s,\"cpu\":%s,\"mem\":%s,\"swap\":%.1f,\"io_kbs\":%.1f,\"gpu_mem\":%.0f,\"gpu\":%.1f,\"name\":\"%s\"}%s",
-      $1, $2, $3, swm, ior, g, gpct, $4, (++n < 20 ? "," : "")
+    printf "{\"pid\":%s,\"cpu\":%.2f,\"mem\":%s,\"swap\":%.1f,\"io_kbs\":%.1f,\"gpu_mem\":%.0f,\"gpu\":%.1f,\"name\":\"%s\"}%s",
+      $1, c, $3, swm, ior, g, gpct, $4, (++n < 20 ? "," : "")
   }' gpumap="$GPU_PROC_MAP" swapmap="$PROC_SWAP" ratemap="$PROC_IO_RATE" \
-  gpu_total="$GPU_MEM_TOTAL" "$GPU_PROC_MAP" "$PROC_SWAP" "$PROC_IO_RATE" "$PS_FILE")
+  gpu_total="$GPU_MEM_TOTAL" ncores="$NCORES" "$GPU_PROC_MAP" "$PROC_SWAP" "$PROC_IO_RATE" "$PS_FILE")
 
 # --- Persist sample, prune old data, and record metric spikes all in ONE
 #     sqlite3 call (was 5 separate invocations per tick). ---
@@ -454,9 +461,10 @@ if [ "$PROC_MIN" -gt "$LAST_PROCMIN" ]; then
   sqlite3 -cmd ".timeout 1500" "$DB" "INSERT OR REPLACE INTO proc_history VALUES ($PROC_TS, '$PROC_JSON_SQL');" 2>/dev/null
   awk '{print $1, $4}' "$PS_FILE" | OMCONTROL_DB="$DB" python3 "$(dirname "$0")/app-meta.py" 2>/dev/null
   # App-exit events: names in last minute's snapshot that are gone now
-  # (only "real" apps: resolved to a package/core, never ephemeral shells).
+  # (only "real" apps: resolved to a package/core, never ephemeral shells
+  # or churning kernel worker threads).
   ps -eo comm --no-headers 2>/dev/null | sed 's/[[:space:]]*$//' \
-    | grep -vE '^(sh|bash|zsh|dash|fish|ps|pgrep|grep|awk|sed|sleep|cat|head|tail|true|false|tee|sort|uniq|comm|notify-send|xargs|find|rm|cp|mv|mkdir|dirname|basename|logout|timeout|omcontrol-poll|sd_notify)$' \
+    | grep -vE '^(sh|bash|zsh|dash|fish|ps|pgrep|grep|awk|sed|sleep|cat|head|tail|true|false|tee|sort|uniq|comm|notify-send|xargs|find|rm|cp|mv|mkdir|dirname|basename|logout|timeout|omcontrol-poll|sd_notify|kworker|kthreadd|ksoftirqd|kswapd|kcompactd|khugepaged|kblockd|kdevtmpfs|khelper|writeback|jbd2|kcryptd|dmcrypt_write|oom_reaper|migration|watchdog|cpuhp|rcu|scsi_|usb_|irq/|ata_|xfs-|btrfs-|flush-|events_unbound|netns|kauditd|\[.*\]|systemd-udevd)$' \
     | sort -u > "$DATA_DIR/.cur_names_min.$$"
   if [ -f "$DATA_DIR/.last_names_min" ]; then
     while IFS= read -r nm; do
@@ -488,7 +496,7 @@ ps -eo pid,comm 2>/dev/null | while read -r pid name; do
     echo "$name"
   fi
 done | \
-  grep -vE '^(sh|bash|zsh|dash|fish|ps|pgrep|grep|awk|sed|sleep|cat|head|tail|true|false|tee|sort|uniq|comm|notify-send|omarchy-notification-send|xargs|find|rm|cp|mv|mkdir|dirname|basename|timeout)$' | \
+  grep -vE '^(sh|bash|zsh|dash|fish|ps|pgrep|grep|awk|sed|sleep|cat|head|tail|true|false|tee|sort|uniq|comm|notify-send|omarchy-notification-send|xargs|find|rm|cp|mv|mkdir|dirname|basename|timeout|kworker|kthreadd|ksoftirqd|kswapd|kcompactd|khugepaged|kblockd|kdevtmpfs|khelper|writeback|jbd2|kcryptd|dmcrypt_write|oom_reaper|migration|watchdog|cpuhp|rcu|scsi_|usb_|irq/|ata_|xfs-|btrfs-|flush-|events_unbound|netns|kauditd|systemd-udevd)$' | \
   sort | uniq > "$DATA_DIR/.cur_names.$$"
 
 comm -23 "$DATA_DIR/.cur_names.$$" <(sort "$SEEN_FILE") > "$DATA_DIR/.new_names.$$"

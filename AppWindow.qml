@@ -26,6 +26,7 @@ PanelWindow {
   exclusionMode: ExclusionMode.Ignore
   WlrLayershell.namespace: root.layerNamespace
   WlrLayershell.layer: WlrLayer.Overlay
+  WlrLayershell.keyboardFocus: root.open ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
 
   // ---- Theme (follows the running Omarchy theme automatically) ----
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
@@ -49,6 +50,28 @@ PanelWindow {
                           disabled: [], perms: {} })
   property string selMetric: "cpu"
   property int chartWindow: 3600
+
+  // Net chart auto-scales KiB/s → Mbps (×8 bits, decimal M) so live transfer
+  // rates read like "9190" with an "Mbps" unit instead of "1148774".
+  readonly property var chartPtsRaw: root.seriesFor(root.selMetric, root.chartWindow)
+  readonly property real chartScale: (function() {
+    if (root.selMetric !== "net") return 1
+    var m = 0, pts = root.chartPtsRaw
+    for (var i = 0; i < pts.length; i++) if (pts[i].v > m) m = pts[i].v
+    return m >= 125 ? 125 : 1
+  })()
+  readonly property string chartUnit:
+      root.selMetric !== "net" ? (root.metricUnits[root.selMetric] || "")
+      : (root.chartScale >= 125 ? "Mbps" : "Kbps")
+  readonly property var chartPts: (function() {
+    var pts = root.chartPtsRaw
+    var s = root.chartScale
+    if (s <= 1) return pts
+    var out = []
+    for (var i = 0; i < pts.length; i++) out.push({ ts: pts[i].ts, v: pts[i].v / s })
+    return out
+  })()
+
   property int activeTab: 0
   property string search: ""
   property var drillProcs: null
@@ -56,11 +79,11 @@ PanelWindow {
   property var filteredProcs: []
   property bool sampleProcRunning: false
   property var filteredApps: []
-  property var groupedApps: []
   property string appSearch: ""
   property string activityFilter: "all"
+  property string procSort: "cpu"
+  property string appSort: "cpu"
   property bool showDisabledOnly: false
-  property string appsView: "publisher"
   property var dismissedAlerts: []
   property string alertFilter: "all"
   property string eventFilter: "all"
@@ -70,7 +93,7 @@ PanelWindow {
   property int eventSeenTs: 0
   property int alertBadge: 0
   property int eventBadge: 0
-  property var alertPrefs: ({ enabled: true, types: {} })
+  property var alertPrefs: ({ enabled: true, types: {}, charts: {} })
   property var detailApp: null
   property var eventDetail: null
   property var detailStats: null
@@ -79,6 +102,8 @@ PanelWindow {
   property bool detailNetBusy: false
   property var procDetail: []
   property bool procDetailBusy: false
+  property var eventCtx: null
+  property bool eventCtxBusy: false
 
   property var barPrefs: ({ stats: ["cpu", "cputemp"], mode: "icon" })
   property bool barPrefsLoaded: false
@@ -86,13 +111,37 @@ PanelWindow {
   readonly property string barStatsPath: dataDir + "/barstats.json"
 
   readonly property var metricUnits: ({ cpu: "%", mem: "%", gpu: "%", procs: "", disk: "%", net: "KB/s" })
+  readonly property var sortOptions: [
+    { v: "cpu", label: "CPU" },
+    { v: "gpu", label: "GPU" },
+    { v: "mem", label: "Memory" },
+    { v: "disk", label: "Disk I/O" },
+    { v: "net", label: "Net" }
+  ]
   readonly property var filteredAlerts: root.computeAlerts()
   readonly property int activeAlertCount: root.filteredAlerts.length
+
+  // History-graph markers: per-kind visibility from the Alerts tab, plus the
+  // master toggle as an override. Notifications stay mode-property only.
+  readonly property var chartEvents: root.computeChartEvents()
+
+  function computeChartEvents() {
+    var alertsOn = root.alertPrefs.enabled !== false
+    var ev = root.sample.events || []
+    var out = []
+    for (var i = 0; i < ev.length; i++) {
+      if (!alertsOn) continue
+      if (!root.chartShown(root.sensitivityForKind(ev[i].kind))) continue
+      out.push(ev[i])
+    }
+    return out
+  }
 
   // The 8 alert sensitivities for the Alerts config tab (display order).
   readonly property var alertTypes: [
     "New App Launch", "Mic or Cam Access", "Service Change", "Unsigned App Launch",
-    "Location Tracking", "New Service Launch", "App Update", "New Suspicious App"
+    "Location Tracking", "New Service Launch", "App Update", "New Suspicious App",
+    "App Exit"
   ]
 
   function liveValue(key) {
@@ -111,19 +160,28 @@ PanelWindow {
 
   function fmtNet(kbs) {
     kbs = Math.max(0, Number(kbs) || 0)
+    if (kbs >= 1048576) return (kbs / 1048576).toFixed(1) + "G"
     if (kbs >= 1024) return (kbs / 1024).toFixed(1) + "M"
     if (kbs >= 1) return Math.round(kbs) + "K"
     return "0"
   }
 
+  function fmtNetFull(kbs) {
+    kbs = Math.max(0, Number(kbs) || 0)
+    if (kbs >= 1048576) return (kbs / 1048576).toFixed(1) + " GB/s"
+    if (kbs >= 1024) return (kbs / 1024).toFixed(1) + " MB/s"
+    return Math.round(kbs) + " KB/s"
+  }
+
   function seriesFor(metric, windowSecs) {
-    var list
-    if (windowSecs >= 86400) list = root.sample.history_1d
-    else if (windowSecs >= 21600) list = root.sample.history_6h
-    else list = root.sample.history_1h
+    var list = windowSecs <= 3600 ? root.sample.history_1h
+             : windowSecs <= 21600 ? root.sample.history_6h
+             : root.sample.history_1d
+    var minTs = list.length ? list[list.length - 1].ts - windowSecs : 0
     var pts = []
     for (var i = 0; i < list.length; i++) {
       var h = list[i]
+      if (minTs > 0 && h.ts < minTs) continue
       var v
       switch (metric) {
         case "cpu": v = h.cpu; break
@@ -140,10 +198,13 @@ PanelWindow {
   }
 
   function tempSeriesFor(windowSecs) {
-    var list = windowSecs >= 86400 ? root.sample.history_1d
-             : windowSecs >= 21600 ? root.sample.history_6h : root.sample.history_1h
+    var list = windowSecs <= 3600 ? root.sample.history_1h
+             : windowSecs <= 21600 ? root.sample.history_6h
+             : root.sample.history_1d
+    var minTs = list.length ? list[list.length - 1].ts - windowSecs : 0
     var pts = []
     for (var i = 0; i < list.length; i++) {
+      if (minTs > 0 && list[i].ts < minTs) continue
       pts.push({ ts: list[i].ts, ctemp: list[i].ctemp || 0, gtemp: list[i].gtemp || 0 })
     }
     return pts
@@ -163,9 +224,24 @@ PanelWindow {
   function topAt(ts, n) {
     var snap = root.nearestSnap(ts)
     if (!snap || !snap.procs) return []
+    var map = {}
+    var list = root.sample.p_list || []
+    for (var i = 0; i < list.length; i++) map[(list[i].name || "").toLowerCase()] = list[i]
     var got = snap.procs.slice()
     got.sort(function(a, b) { return b.cpu - a.cpu })
-    return got.slice(0, n)
+    var out = []
+    for (var j = 0; j < got.length && out.length < n; j++) {
+      var e = got[j]
+      var en = map[(e.name || "").toLowerCase()] || {}
+      var copy = {}
+      for (var k in e) copy[k] = e[k]
+      copy.verified = en.verified === undefined ? 0 : en.verified
+      copy.publisher = en.publisher || "Unknown"
+      copy.perms = en.perms || []
+      copy.disabled = !!en.disabled
+      out.push(copy)
+    }
+    return out
   }
 
   function fmtTime(ts) {
@@ -203,16 +279,43 @@ PanelWindow {
     return (kind || "Event").toUpperCase()
   }
 
+  function eventKindExplain(kind) {
+    switch (kind) {
+      case "app_launch":
+      case "new_app": return "An application was launched. First-seen launches are recorded so you can spot something that started running without you realising."
+      case "app_exit": return "A previously-running application exited (left the process list)."
+      case "cpu_spike": return "System CPU load across all cores peaked above 95% during a 0.2s sample window."
+      case "mem_spike": return "System memory usage exceeded 92% — only a small amount of RAM was free at that moment."
+      case "mic_access": return "An application accessed the microphone."
+      case "cam_access": return "An application accessed the camera."
+      case "location_access": return "An application accessed location data."
+      case "permission": return "An application was granted access to a sensitive permission."
+      case "publisher_block": return "An executable without a known, verifiable publisher was launched and blocked by your policy."
+      case "unsigned_launch": return "A binary that does not come from a verified, signed package was started — it was not in the trusted catalog."
+      case "unknown_app": return "A process with no registered package or publisher started. It is not in the app catalog at all, so nothing can be verified about its origin."
+      case "suspicious_app": return "This binary matched suspicion heuristics (unusual path, name, or origin) and was flagged."
+      case "service_change": return "A system service was started or stopped."
+      case "service_launch": return "A system service was launched."
+      case "app_update": return "An installed application was updated."
+      default:
+        if (kind.indexOf("user_") === 0) return "A manual action (allow, disable or enable) taken from the OmaControl UI."
+        return (kind || "System event") + " was logged by the system monitor."
+    }
+  }
+
   // Merge the running apps with the known-apps catalog into one inventory,
-  // apply the search + activity + disabled filters, sort, and (optionally)
-  // regroup by publisher for the publisher view.
+  // apply the search + activity + disabled filters, and sort.
   function renderApps() {
     var q = root.appSearch.trim().toLowerCase()
     var byName = {}
     var src = root.sample.apps || []
     var cat = root.sample.catalog || []
     var i, a
-    for (i = 0; i < src.length; i++) byName[(src[i].name || "").toLowerCase()] = src[i]
+    for (i = 0; i < src.length; i++) {
+      var srcNm = (src[i].name || "").toLowerCase()
+      byName[srcNm] = src[i]
+      byName[srcNm].running = true
+    }
     for (i = 0; i < cat.length; i++) {
       var nm = cat[i].name || ""
       var k = nm.toLowerCase()
@@ -239,40 +342,9 @@ PanelWindow {
     if (root.showDisabledOnly) out = out.filter(function(a) { return a.disabled })
     out.sort(function(a, b) {
       if (a.running !== b.running) return a.running ? -1 : 1
-      return (b.cpu || 0) - (a.cpu || 0)
+      return (root.sortVal(b, root.appSort) || 0) - (root.sortVal(a, root.appSort) || 0)
     })
     root.filteredApps = out.slice(0, 400)
-    root.groupedApps = root.groupByPublisher(root.filteredApps)
-  }
-
-  function groupByPublisher(list) {
-    var groups = {}
-    var order = []
-    for (var i = 0; i < list.length; i++) {
-      var pub = (list[i].publisher || "Unknown") || "Unknown"
-      if (!groups[pub]) { groups[pub] = []; order.push(pub) }
-      groups[pub].push(list[i])
-    }
-    var out = []
-    for (var j = 0; j < order.length; j++) {
-      var apps = groups[order[j]]
-      var running = 0, disabled = 0
-      for (var k = 0; k < apps.length; k++) {
-        if (apps[k].running) running++
-        if (apps[k].disabled) disabled++
-      }
-      out.push({ publisher: order[j], apps: apps, noteCount: apps.length,
-                runningCount: running, disabledCount: disabled })
-    }
-    out.sort(function(x, y) {
-      var xr = x.runningCount > 0, yr = y.runningCount > 0
-      if (xr !== yr) return xr ? -1 : 1
-      var xn = 0, yn = 0, i
-      for (i = 0; i < x.apps.length; i++) xn += x.apps[i].cpu || 0
-      for (i = 0; i < y.apps.length; i++) yn += y.apps[i].cpu || 0
-      return yn - xn
-    })
-    return out
   }
 
   function confirmedDisable(name) {
@@ -359,6 +431,15 @@ PanelWindow {
     statsProc.running = true
   }
 
+  function loadEventContext(ev) {
+    root.eventCtx = null
+    root.eventCtxBusy = true
+    var args = [Qt.resolvedUrl("backend/event-context.sh").toString().replace("file://", ""),
+                "" + (ev && ev.ts ? ev.ts : 0), (ev && ev.app) || "", (ev && ev.kind) || ""]
+    eventCtxProc.command = args
+    eventCtxProc.running = true
+  }
+
   function isBarPref(id) { return (root.barPrefs.stats || []).indexOf(id) >= 0 }
   function barPrefPreview() {
     var list = root.barPrefs.stats || []
@@ -376,20 +457,25 @@ PanelWindow {
     var list = (root.barPrefs.stats || []).slice()
     var i = list.indexOf(id)
     if (i >= 0) list.splice(i, 1); else list.push(id)
-    root.barPrefs = { stats: list, mode: root.barPrefs.mode || "icon" }
+    root.barPrefs = { stats: list, mode: root.barPrefs.mode || "icon", barShowBell: root.barPrefs.barShowBell !== false }
     root.saveBarPrefs()
   }
   function setBarPrefMode(m) {
     if (m !== "icon" && m !== "name" && m !== "none") return
-    root.barPrefs = { stats: root.barPrefs.stats || [], mode: m }
+    root.barPrefs = { stats: root.barPrefs.stats || [], mode: m, barShowBell: root.barPrefs.barShowBell !== false }
     root.saveBarPrefs()
   }
   function resetBarPrefs() {
-    root.barPrefs = { stats: ["cpu", "cputemp"], mode: "icon" }
+    root.barPrefs = { stats: ["cpu", "cputemp"], mode: "icon", barShowBell: true }
     root.saveBarPrefs()
   }
+  function setBarShowBell(on) {
+    root.barPrefs = { stats: root.barPrefs.stats || [], mode: root.barPrefs.mode || "icon", barShowBell: !!on }
+    root.saveBarPrefs()
+    root.runBackend("bar-prefs.sh", ["set-show-bell", on ? "on" : "off"])
+  }
   function saveBarPrefs() {
-    var json = JSON.stringify({ stats: root.barPrefs.stats || [], mode: root.barPrefs.mode || "icon" })
+    var json = JSON.stringify({ stats: root.barPrefs.stats || [], mode: root.barPrefs.mode || "icon", barShowBell: root.barPrefs.barShowBell !== false })
     var safe = json.replace(/'/g, "'\\''")
     barPrefsSaveProc.command = ["sh", "-c",
       "mkdir -p '" + root.dataDir + "' && printf '%s' '" + safe + "' > '" + root.barStatsPath + "'"]
@@ -478,12 +564,24 @@ PanelWindow {
       if (q !== "" && (p.name || "").toLowerCase().indexOf(q) < 0) continue
       out.push(p)
     }
-    out.sort(function(a, b) { return b.cpu - a.cpu })
+    out.sort(function(a, b) { return root.sortVal(b, root.procSort) - root.sortVal(a, root.procSort) })
     root.filteredProcs = out
   }
 
+  // Live per-process resource value used by the sort dropdowns.
+  function sortVal(p, key) {
+    switch (key) {
+      case "gpu":  return p.gpu || 0
+      case "mem":  return p.mem || 0
+      case "disk": return p.io_kbs || p.io || 0
+      case "net":  return p.net_kbs || p.net || 0
+      case "cpu":
+      default:     return p.cpu || 0
+    }
+  }
+
   function onSampleReceived() {
-    root.alertPrefs = root.sample.alert_prefs || { enabled: true, types: {} }
+    root.alertPrefs = root.sample.alert_prefs || { enabled: true, types: {}, charts: {} }
     root.renderList()
     root.renderApps()
     root.updateBadges()
@@ -505,9 +603,24 @@ PanelWindow {
     var types = {}; var src = root.alertPrefs.types || {}
     for (var k in src) types[k] = src[k]
     types[type] = mode
-    root.alertPrefs = ({ "enabled": root.alertPrefs.enabled, "types": types })
+    root.alertPrefs = ({ "enabled": root.alertPrefs.enabled, "types": types, "charts": root.alertPrefs.charts || {} })
     root.setAlertPref(type, mode)
     root.refreshSoon()
+  }
+
+  function setChartToggle(type, on) {
+    var charts = {}; var src = root.alertPrefs.charts || {}
+    for (var k in src) charts[k] = src[k]
+    charts[type] = on
+    root.alertPrefs = ({ "enabled": root.alertPrefs.enabled, "types": root.alertPrefs.types || {}, "charts": charts })
+    root.runBackend("alert-prefs.sh", ["set-chart", type, on ? "on" : "off"])
+    root.refreshSoon()
+  }
+
+  // Whether chart markers for an event kind are shown (defaults to shown).
+  function chartShown(type) {
+    if (!type) return true
+    return (root.alertPrefs.charts || {})[type] !== false
   }
 
   // Normalized per-sensitivity notification mode: "toast" | "notify" | "none".
@@ -520,12 +633,27 @@ PanelWindow {
     return "none"
   }
 
+  // Chart-matching color per sensitivity label (mirrors HistoryGraph.evColor
+  // and backend/unread.sh COLORS) so the Alerts pills preview the chart/bell hue.
+  function alertTypeColor(type) {
+    switch (type) {
+      case "New App Launch": return Qt.rgba(0.24, 0.7, 0.44, 1)
+      case "App Exit": return Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.85)
+      case "Mic or Cam Access":
+      case "Location Tracking":
+      case "Unsigned App Launch":
+      case "New Suspicious App": return root.urgent
+      default: return root.accent
+    }
+  }
+
   // Event kind → alert sensitivity label (bell-badge gating).
   // Every kind the toast funnel knows is mapped so a "none" mode can silence
   // the bell for it; kinds without a mapping always count when alerts are on.
   function sensitivityForKind(kind) {
     var map = {
       "app_launch": "New App Launch",
+      "app_exit": "App Exit",
       "mic_access": "Mic or Cam Access", "cam_access": "Mic or Cam Access", "permission": "Mic or Cam Access",
       "location_access": "Location Tracking",
       "unsigned_launch": "Unsigned App Launch", "unknown_app": "Unsigned App Launch", "publisher_block": "Unsigned App Launch",
@@ -543,6 +671,8 @@ PanelWindow {
   onAppSearchChanged: root.renderApps()
   onActivityFilterChanged: root.renderApps()
   onShowDisabledOnlyChanged: root.renderApps()
+  onProcSortChanged: root.renderList()
+  onAppSortChanged: root.renderApps()
   onEventSearchChanged: root.computeEvents()
   onEventFilterChanged: root.computeEvents()
 
@@ -625,6 +755,19 @@ PanelWindow {
     }
   }
   Process {
+    id: eventCtxProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.eventCtxBusy = false
+        try {
+          var parsed = JSON.parse(text)
+          root.eventCtx = (parsed && parsed.ok) ? parsed : null
+        } catch (e) { root.eventCtx = null }
+      }
+    }
+  }
+  Process {
     id: barPrefsLoadProc
     stdout: StdioCollector {
       waitForEnd: true
@@ -633,6 +776,7 @@ PanelWindow {
           var parsed = JSON.parse(text)
           if (Array.isArray(parsed)) root.barPrefs = { stats: parsed, mode: root.barPrefs.mode || "icon" }
           else if (parsed && parsed.stats) root.barPrefs = { stats: parsed.stats, mode: ["icon","name","none"].indexOf(parsed.mode) >= 0 ? parsed.mode : "icon" }
+          root.barPrefs = { stats: root.barPrefs.stats || [], mode: root.barPrefs.mode || "icon", barShowBell: parsed.barShowBell !== false }
         } catch (e) {}
         root.barPrefsLoaded = true
       }
@@ -789,11 +933,13 @@ PanelWindow {
 
           Row {
             id: rangeRow
+            z: 90
             visible: !root.compact
             anchors.top: parent.top
             anchors.right: parent.right
             spacing: Style.space(8)
 
+            RangePill { seconds: 900; active: root.chartWindow === 900; onChosen: root.chartWindow = 900 }
             RangePill { seconds: 3600; active: root.chartWindow === 3600; onChosen: root.chartWindow = 3600 }
             RangePill { seconds: 21600; active: root.chartWindow === 21600; onChosen: root.chartWindow = 21600 }
             RangePill { seconds: 86400; active: root.chartWindow === 86400; onChosen: root.chartWindow = 86400 }
@@ -822,15 +968,24 @@ PanelWindow {
             height: root.compact
                 ? parent.height - Style.space(4)
                 : Style.space(235)
-            pts: root.seriesFor(root.selMetric, root.chartWindow)
+            pts: root.chartPts
             lineColor: root.accent
-            events: root.sample.events || []
+            events: root.chartEvents
             dangerColor: root.urgent
             dangerThreshold: (root.selMetric === "procs" || root.selMetric === "net") ? -1 : 90
             maxValue: (root.selMetric === "procs" || root.selMetric === "net") ? -1 : 100
-            unit: root.metricUnits[root.selMetric]
+            unit: root.chartUnit
             windowSecs: root.chartWindow
             onDrilled: function(ts) {
+              // Clicking near an event pin opens the full event-detail popup;
+              // anywhere else keeps the process drill-down.
+              var evs = root.chartEvents
+              var best = null, bd = 60
+              for (var i = 0; i < evs.length; i++) {
+                var dd = Math.abs(evs[i].ts - ts)
+                if (dd < bd) { bd = dd; best = evs[i] }
+              }
+              if (best) { root.eventDetail = best; return }
               root.drillTs = ts
               root.drillProcs = root.topAt(ts, 20)
               if (!root.drillProcs.length) root.drillProcs = null
@@ -859,7 +1014,7 @@ PanelWindow {
             anchors.left: parent.left
             anchors.right: parent.right
             height: Style.space(40)
-            pts: root.seriesFor(root.selMetric, root.chartWindow)
+            pts: root.chartPts
             graph: graph
           }
 
@@ -874,13 +1029,14 @@ PanelWindow {
 
             Row {
               id: paneHeader
+              z: 90
               anchors.top: parent.top
               anchors.left: parent.left
               anchors.right: parent.right
               spacing: Style.space(8)
 
               Rectangle {
-                width: parent.width - (root.drillProcs !== null ? Style.space(112) : 0)
+                width: parent.width - (root.drillProcs !== null ? Style.space(112) : 0) - Style.space(166)
                 height: Style.space(30)
                 radius: Style.space(12)
                 color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
@@ -918,6 +1074,12 @@ PanelWindow {
                 active: false
                 onChosen: root.drillProcs = null
               }
+              SortMenu {
+                visible: root.drillProcs === null
+                options: root.sortOptions
+                value: root.procSort
+                onChosen: function(v) { root.procSort = v }
+              }
             }
 
             Text {
@@ -928,7 +1090,7 @@ PanelWindow {
               anchors.right: parent.right
               text: root.drillProcs
                   ? "Processes at " + root.fmtTime(root.drillTs) + " · click the chart elsewhere to change the moment"
-                  : "Running processes · click a row for details & actions"
+                  : "Running processes · click a row for details & actions · NET column = system-wide transfer"
               color: root.dim1
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
@@ -943,6 +1105,7 @@ PanelWindow {
               anchors.right: parent.right
               leftLabel: "PROCESS"
               midLabel: "TRUST"
+              midX: Style.space(168)
             }
 
             ListView {
@@ -958,14 +1121,14 @@ PanelWindow {
               delegate: ProcRow {
                 width: procList.width
                 name: modelData.name
+                pid: Number(modelData.pid) || 0
                 cpu: modelData.cpu
                 mem: modelData.mem
                 io: modelData.io_kbs
                 gpu: modelData.gpu
-                publisher: modelData.publisher
                 verified: modelData.verified
                 perms: modelData.perms
-                instances: modelData.instances
+instances: Number(modelData.instances) || 1
                 disabled: modelData.disabled
                 sparks: root.sparksFor(modelData.name)
                 onDetails: root.detailApp = ({ name: modelData.name,
@@ -990,13 +1153,14 @@ PanelWindow {
           anchors.margins: Style.space(16)
 
           Row {
+            z: 90
             anchors.top: parent.top
             anchors.left: parent.left
             anchors.right: parent.right
             spacing: Style.space(8)
 
             Rectangle {
-              width: parent.width - Style.space(360)
+              width: parent.width - Style.space(516)
               height: Style.space(30)
               radius: Style.space(12)
               color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
@@ -1026,16 +1190,16 @@ PanelWindow {
               }
             }
 
+            SortMenu {
+              options: root.sortOptions
+              value: root.appSort
+              onChosen: function(v) { root.appSort = v }
+            }
+
             OMCPill { label: "Running"; active: root.activityFilter === "running"; onChosen: root.activityFilter = "running" }
             OMCPill { label: "Not running"; active: root.activityFilter === "not"; onChosen: root.activityFilter = "not" }
             OMCPill { label: "All"; active: root.activityFilter === "all"; onChosen: root.activityFilter = "all" }
             OMCPill { label: "Disabled"; active: root.showDisabledOnly; onChosen: root.showDisabledOnly = !root.showDisabledOnly }
-            OMCPill {
-              width: Style.space(112)
-              label: root.appsView === "publisher" ? "\uf0c9  By publisher" : "\uf03a  Flat list"
-              active: false
-              onChosen: root.appsView = (root.appsView === "publisher" ? "list" : "publisher")
-            }
           }
 
           Text {
@@ -1044,8 +1208,7 @@ PanelWindow {
             anchors.topMargin: Style.space(38)
             anchors.left: parent.left
             anchors.right: parent.right
-            text: (root.filteredApps || []).length + " apps · "
-                + "click a row for details · hover a publisher for bulk actions"
+            text: (root.filteredApps || []).length + " apps · click a row for details · NET column = system-wide transfer"
             color: root.dim1
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
@@ -1060,11 +1223,11 @@ PanelWindow {
             anchors.right: parent.right
             leftLabel: "APP"
             midLabel: "TRUST"
+            midX: Style.space(248)
           }
 
           ListView {
             id: appList
-            visible: root.appsView === "list"
             anchors.top: appHeader.bottom
             anchors.topMargin: Style.space(2)
             anchors.left: parent.left
@@ -1076,36 +1239,10 @@ PanelWindow {
             delegate: AppRow {
               width: appList.width
               app: modelData
-              showPublisher: true
               onDetails: root.detailApp = modelData
               onKill: root.appAction("kill", modelData.name)
               onDisable: root.disableApp(modelData.name)
               onEnable: root.enableApp(modelData.name)
-            }
-          }
-
-          ListView {
-            id: publisherList
-            visible: root.appsView === "publisher"
-            anchors.top: appHeader.bottom
-            anchors.topMargin: Style.space(2)
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            clip: true
-            spacing: Style.space(6)
-            model: root.groupedApps
-            delegate: PublisherGroup {
-              width: publisherList.width
-              group: modelData
-              onBulkKill: function(names) {
-                for (var i = 0; i < names.length; i++) root.appAction("kill", names[i])
-              }
-              onBulkDisable: function(names) { if (names.length) root.confirmedDisable(names[0]) }
-              onDetails: function(app) { root.detailApp = app }
-              onKill: function(name) { root.appAction("kill", name) }
-              onDisable: function(name) { root.disableApp(name) }
-              onEnable: function(name) { root.enableApp(name) }
             }
           }
         }
@@ -1135,7 +1272,7 @@ PanelWindow {
               active: root.alertPrefs.enabled !== false
               onChosen: {
                 var next = !root.alertPrefs.enabled
-                root.alertPrefs = ({ "enabled": next, "types": root.alertPrefs.types || {} })
+                root.alertPrefs = ({ "enabled": next, "types": root.alertPrefs.types || {}, "charts": root.alertPrefs.charts || {} })
                 root.setAlertsEnabled(next)
                 root.refreshSoon()
               }
@@ -1148,23 +1285,36 @@ PanelWindow {
             anchors.topMargin: Style.space(38)
             anchors.left: parent.left
             anchors.right: parent.right
-            text: "Per event type, pick how it surfaces — Toast (pop-up) · Notify me (bell badge) · Quiet"
+            text: "Per event type, pick how it surfaces — Toast · Notify me · Quiet — and whether it leaves a marker on the history chart"
             color: root.dim1
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
             elide: Text.ElideRight
           }
 
-          Row {
+          Text {
+            id: alertsHelp
             anchors.top: alertsTitle.bottom
+            anchors.topMargin: Style.space(3)
+            anchors.left: parent.left
+            anchors.right: parent.right
+            text: "Each type gets one notification mode below; the Chart marker switch is independent of it. The Alerts ON/OFF pill above silences everything at once."
+            color: root.dim2
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Row {
+            anchors.top: alertsHelp.bottom
             anchors.topMargin: Style.space(8)
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            spacing: Style.space(10)
+            spacing: Style.space(8)
 
             Column {
-              width: (parent.width - Style.space(20)) / 3
+              width: (parent.width - Style.space(24)) / 4
               spacing: Style.space(6)
               Rectangle {
                 width: parent.width; height: Style.space(30); radius: Style.space(12)
@@ -1180,10 +1330,19 @@ PanelWindow {
                   font.bold: true
                 }
               }
+              Text {
+                width: parent.width
+                text: "Desktop pop-up the moment it happens, plus a count dot on the Events tab."
+                color: root.dim2
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
               Repeater {
                 model: root.alertTypes
                 delegate: OMCPill {
                   width: parent.width
+                  pillColor: root.alertTypeColor(modelData)
                   active: root.alertMode(modelData) === "toast"
                   label: modelData
                   onChosen: root.setAlertMode(modelData, "toast")
@@ -1192,7 +1351,7 @@ PanelWindow {
             }
 
             Column {
-              width: (parent.width - Style.space(20)) / 3
+              width: (parent.width - Style.space(24)) / 4
               spacing: Style.space(6)
               Rectangle {
                 width: parent.width; height: Style.space(30); radius: Style.space(12)
@@ -1208,10 +1367,19 @@ PanelWindow {
                   font.bold: true
                 }
               }
+              Text {
+                width: parent.width
+                text: "No pop-up; adds a red count dot on the Events tab (bell icon) so you can check the log later."
+                color: root.dim2
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
               Repeater {
                 model: root.alertTypes
                 delegate: OMCPill {
                   width: parent.width
+                  pillColor: root.alertTypeColor(modelData)
                   active: root.alertMode(modelData) === "notify"
                   label: modelData
                   onChosen: root.setAlertMode(modelData, "notify")
@@ -1220,7 +1388,7 @@ PanelWindow {
             }
 
             Column {
-              width: (parent.width - Style.space(20)) / 3
+              width: (parent.width - Style.space(24)) / 4
               spacing: Style.space(6)
               Rectangle {
                 width: parent.width; height: Style.space(30); radius: Style.space(12)
@@ -1236,13 +1404,59 @@ PanelWindow {
                   font.bold: true
                 }
               }
+              Text {
+                width: parent.width
+                text: "No pop-up or badge — the event is only logged for later."
+                color: root.dim2
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
               Repeater {
                 model: root.alertTypes
                 delegate: OMCPill {
                   width: parent.width
+                  pillColor: root.alertTypeColor(modelData)
                   active: root.alertMode(modelData) === "none"
                   label: modelData
                   onChosen: root.setAlertMode(modelData, "none")
+                }
+              }
+            }
+
+            Column {
+              width: (parent.width - Style.space(24)) / 4
+              spacing: Style.space(6)
+              Rectangle {
+                width: parent.width; height: Style.space(30); radius: Style.space(12)
+                color: Qt.rgba(0.36, 0.55, 0.95, 0.10)
+                border.width: 1
+                border.color: Qt.rgba(0.36, 0.55, 0.95, 0.45)
+                Text {
+                  anchors.left: parent.left; anchors.leftMargin: Style.space(10); anchors.verticalCenter: parent.verticalCenter
+                  text: "Chart marker"
+                  color: "#6f9cff"
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                }
+              }
+              Text {
+                width: parent.width
+                text: "Show it as a pin on the history chart to spot patterns — independent of the modes above."
+                color: root.dim2
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+              Repeater {
+                model: root.alertTypes
+                delegate: OMCPill {
+                  width: parent.width
+                  pillColor: root.alertTypeColor(modelData)
+                  active: root.chartShown(modelData)
+                  label: root.chartShown(modelData) ? modelData : (modelData + " · hidden")
+                  onChosen: root.setChartToggle(modelData, !root.chartShown(modelData))
                 }
               }
             }
@@ -1598,6 +1812,55 @@ PanelWindow {
               }
             }
 
+            Rectangle {
+              width: parent.width
+              height: Style.space(42)
+              radius: Style.space(12)
+              color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.07)
+              Row {
+                anchors.fill: parent
+                anchors.margins: Style.space(8)
+                spacing: Style.space(8)
+                Text {
+                  text: "\uf0f3"
+                  color: root.barPrefs.barShowBell !== false ? root.accent : root.dim1
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.body
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+                Text {
+                  width: parent.width - Style.space(70)
+                  elide: Text.ElideRight
+                  text: "Show unread bell badge in the top bar"
+                  color: root.fg
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+                Rectangle {
+                  width: Style.space(46); height: Style.space(22); radius: Style.space(11)
+                  border.width: 1
+                  border.color: root.barPrefs.barShowBell !== false ? root.accent : root.dim1
+                  color: (bellHover.containsMouse || root.barPrefs.barShowBell !== false) ? root.accentSoft : "transparent"
+                  Text {
+                    anchors.centerIn: parent
+                    text: root.barPrefs.barShowBell !== false ? "ON" : "OFF"
+                    color: root.barPrefs.barShowBell !== false ? root.accent : root.dim1
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
+                  MouseArea {
+                    id: bellHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.setBarShowBell(root.barPrefs.barShowBell === false)
+                  }
+                }
+              }
+            }
+
             Text {
               width: parent.width
               text: "Saved to barstats.json — the bar icon updates automatically. Stats with no live value are hidden."
@@ -1682,6 +1945,10 @@ PanelWindow {
     event: root.eventDetail
     z: 63
     anchors.fill: card
+    onEventChanged: {
+      if (root.eventDetail) root.loadEventContext(root.eventDetail)
+      else root.eventCtx = null
+    }
     onClose: root.eventDetail = null
     onKill: function(name) { root.appAction("kill", name); root.eventDetail = null }
     onDisable: function(name) { root.disableApp(name); root.eventDetail = null }
@@ -1689,20 +1956,27 @@ PanelWindow {
   }
 
   // Shared rounded-pill: used by the Activity MET selectors (label + optional
-  // live value), the Apps filter row, the Alerts config chips and (via
-  // RangePill) the history range selector — one shape everywhere.
+  // live value), the Apps filter row and the Alerts config chips — one shape
+  // everywhere.
   component OMCPill: Rectangle {
     id: pill
     property bool active: false
     property string label: ""
     property string value: ""
+    property color pillColor: root.accent
     signal chosen()
     radius: height / 2
     height: pill.value === "" ? Style.space(28) : Style.space(44)
     width: pill.value === ""
         ? Math.max(pillLabel.implicitWidth + Style.space(20), Style.space(40))
         : Math.max(Style.space(116), Math.min(Style.space(170), pillValue.implicitWidth + Style.space(24)))
-    color: pill.active ? root.accent : root.accentSoft
+    color: pill.active
+        ? pill.pillColor
+        : Qt.rgba(pill.pillColor.r, pill.pillColor.g, pill.pillColor.b, 0.12)
+    border.width: 1
+    border.color: pill.active
+        ? pill.pillColor
+        : Qt.rgba(pill.pillColor.r, pill.pillColor.g, pill.pillColor.b, 0.35)
     Text {
       id: pillLabel
       visible: pill.value === ""
@@ -1747,7 +2021,115 @@ PanelWindow {
   component RangePill: OMCPill {
     id: rp
     property int seconds: 3600
-    label: rp.seconds >= 86400 ? "1D" : (rp.seconds >= 21600 ? "6H" : "1H")
+    label: rp.seconds >= 86400 ? "1d"
+         : rp.seconds >= 21600 ? "6h"
+         : rp.seconds >= 3600 ? "1h"
+         : "15m"
+  }
+
+  // Sort dropdown for the Activity / Apps lists. Options: [{v, label}].
+  // Purely visual — the caller binds `value` and re-renders on change.
+  component SortMenu: Item {
+    id: sm
+    property var options: []
+    property string value: ""
+    property bool open: false
+    property string prefix: "Sort"
+    signal chosen(var v)
+    width: Style.space(158)
+    height: Style.space(30)
+    z: 60
+
+    readonly property string cur: (function() {
+      for (var i = 0; i < sm.options.length; i++)
+        if ((sm.options[i].v || "") === sm.value) return sm.options[i].label
+      return ""
+    })()
+
+    Rectangle {
+      id: smBtn
+      anchors.fill: parent
+      radius: Style.space(12)
+      color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
+      border.width: 1
+      border.color: sm.open
+          ? root.accent
+          : Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.4)
+      Text {
+        anchors.left: parent.left
+        anchors.leftMargin: Style.space(10)
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(18)
+        anchors.verticalCenter: parent.verticalCenter
+        text: sm.prefix + " \u25bc  " + sm.cur
+        color: root.fg
+        font.family: root.contentFontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+      }
+      MouseArea {
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: sm.open = !sm.open
+      }
+    }
+
+    Rectangle {
+      visible: sm.open
+      anchors.top: smBtn.bottom
+      anchors.topMargin: Style.space(4)
+      anchors.right: parent.right
+      z: 80
+      width: Style.space(182)
+      height: smContent.implicitHeight + Style.space(8)
+      color: root.surface
+      radius: Style.space(10)
+      border.width: 1
+      border.color: root.surfaceBorder
+      MouseArea {
+        anchors.fill: parent
+        onClicked: sm.open = false
+      }
+
+      Column {
+        id: smContent
+        anchors.top: parent.top
+        anchors.topMargin: Style.space(4)
+        anchors.left: parent.left
+        anchors.right: parent.right
+        spacing: Style.space(2)
+        Repeater {
+          model: sm.options
+          delegate: Rectangle {
+            width: parent.width
+            height: Style.space(26)
+            radius: Style.space(7)
+            color: modelData.v === sm.value
+                ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
+                : "transparent"
+            Text {
+              anchors.left: parent.left
+              anchors.leftMargin: Style.space(8)
+              anchors.verticalCenter: parent.verticalCenter
+              text: modelData.label
+              color: modelData.v === sm.value ? root.accent : root.fg
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+            }
+            MouseArea {
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                sm.chosen(modelData.v)
+                sm.open = false
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   component NavTab: Rectangle {
@@ -1860,7 +2242,6 @@ PanelWindow {
     id: ar
     property var app: ({})
     property bool actionsOpen: false
-    property bool showPublisher: false
     signal kill(string name)
     signal enable(string name)
     signal disable(string name)
@@ -1911,23 +2292,9 @@ PanelWindow {
         font.bold: true
       }
 
-      Text {
-        id: arPublisher
-        visible: ar.showPublisher && (ar.app.publisher || "Unknown") !== "Unknown"
-        anchors.left: arName.right
-        anchors.leftMargin: Style.space(8)
-        anchors.verticalCenter: parent.verticalCenter
-        width: Style.space(170)
-        elide: Text.ElideRight
-        text: ar.app.publisher || "Unknown"
-        color: root.dim1
-        font.family: root.contentFontFamily
-        font.pixelSize: Style.font.caption
-      }
-
       Row {
         id: arTags
-        anchors.left: arPublisher.visible ? arPublisher.right : arName.right
+        anchors.left: arName.right
         anchors.leftMargin: Style.space(8)
         anchors.verticalCenter: parent.verticalCenter
         spacing: Style.space(4)
@@ -1941,6 +2308,22 @@ PanelWindow {
             anchors.centerIn: parent
             text: "\uf05e  Disabled"
             color: root.dim1
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+          }
+        }
+        Rectangle {
+          visible: ar.app.verified
+          width: Style.space(68)
+          height: Style.space(16)
+          radius: Style.space(8)
+          color: Qt.rgba(0.3, 0.75, 0.45, 0.18)
+          border.width: 1
+          border.color: Qt.rgba(0.3, 0.75, 0.45, 0.5)
+          Text {
+            anchors.centerIn: parent
+            text: "\uf058  Verified"
+            color: "#3fbf6f"
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
           }
@@ -1981,37 +2364,76 @@ PanelWindow {
         }
       }
 
-      Rectangle {
-        id: arPidBadge
-        anchors.right: arSpark.left
-        anchors.rightMargin: Style.space(8)
+      Text {
+        id: arPid
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(476)
         anchors.verticalCenter: parent.verticalCenter
-        width: Style.space(30)
-        height: Style.space(16)
-        radius: Style.space(8)
-        color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
-        Text {
-          anchors.centerIn: parent
-          text: (ar.app.pids || []).length
-          color: root.dim1
-          font.family: root.contentFontFamily
-          font.pixelSize: Style.font.caption
-        }
+        width: Style.space(60)
+        horizontalAlignment: Text.AlignHCenter
+        text: (function() {
+          var p = ar.app.pids || []
+          if (p.length === 0) return ""
+          if (p.length === 1) return String(p[0])
+          return String(p[0]) + " +" + (p.length - 1)
+        })()
+        elide: Text.ElideRight
+        color: root.dim1
+        font.family: root.contentFontFamily
+        font.pixelSize: Style.font.caption
       }
       Sparkline {
         id: arSpark
-        anchors.right: arMem.left
-        anchors.rightMargin: Style.space(8)
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(380)
         anchors.verticalCenter: parent.verticalCenter
-        width: Style.space(52)
+        width: Style.space(96)
         height: Style.space(14)
         data: ar.app.spark || []
       }
       Text {
-        id: arMem
-        anchors.right: arCpu.left
-        anchors.rightMargin: Style.space(8)
+        id: arNet
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(312)
         anchors.verticalCenter: parent.verticalCenter
+        width: Style.space(56)
+        horizontalAlignment: Text.AlignHCenter
+        text: root.fmtNet((root.sample.net_rx_kbs || 0) + (root.sample.net_tx_kbs || 0))
+        color: root.dim1
+        font.family: root.contentFontFamily
+        font.pixelSize: Style.font.caption
+      }
+      Text {
+        id: arDisk
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(240)
+        anchors.verticalCenter: parent.verticalCenter
+        width: Style.space(56)
+        horizontalAlignment: Text.AlignHCenter
+        text: root.fmtNet(ar.app.io || 0)
+        color: root.dim1
+        font.family: root.contentFontFamily
+        font.pixelSize: Style.font.caption
+      }
+      Text {
+        id: arGpu
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(176)
+        anchors.verticalCenter: parent.verticalCenter
+        width: Style.space(48)
+        horizontalAlignment: Text.AlignHCenter
+        text: Math.round(ar.app.gpu || 0) + "%"
+        color: root.dim1
+        font.family: root.contentFontFamily
+        font.pixelSize: Style.font.caption
+      }
+      Text {
+        id: arMem
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(112)
+        anchors.verticalCenter: parent.verticalCenter
+        width: Style.space(48)
+        horizontalAlignment: Text.AlignHCenter
         text: Math.round(ar.app.mem || 0) + "%"
         color: root.dim1
         font.family: root.contentFontFamily
@@ -2019,8 +2441,8 @@ PanelWindow {
       }
       Rectangle {
         id: arCpu
-        anchors.right: arMenuAnc.left
-        anchors.rightMargin: Style.space(6)
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(40)
         anchors.verticalCenter: parent.verticalCenter
         width: Style.space(60)
         height: Style.space(16)
@@ -2039,7 +2461,7 @@ PanelWindow {
       Rectangle {
         id: arMenuAnc
         anchors.right: parent.right
-        anchors.rightMargin: Style.space(6)
+        anchors.rightMargin: Style.space(8)
         anchors.verticalCenter: parent.verticalCenter
         width: Style.space(24)
         height: Style.space(22)
@@ -2335,6 +2757,40 @@ PanelWindow {
     readonly property color typed: root.eventTypeColor(edp.ev.kind || "")
     readonly property bool hasApp: (edp.ev.app || "") !== ""
     readonly property var snapProcs: root.topAt(edp.ev.ts || 0, 8)
+    readonly property bool loading: root.eventCtxBusy && !root.eventCtx
+    readonly property string verifiedLine: (function() {
+      var a = root.eventCtx && root.eventCtx.app
+      if (!a) return ""
+      var tag = a.verified ? "\uf058 Verified" : "\uf071 Unsigned"
+      var pub = (a.publisher && a.publisher !== "Unknown" && a.publisher !== "")
+          ? " · " + a.publisher : ""
+      return tag + pub
+    })()
+    readonly property string appDesc: (root.eventCtx && root.eventCtx.app && root.eventCtx.app.desc) || ""
+    readonly property var ctxApp: root.eventCtx && root.eventCtx.app
+    readonly property bool ctxAppVerified: !!(edp.ctxApp && edp.ctxApp.verified)
+    readonly property string ctxAppPublisher: (edp.ctxApp && edp.ctxApp.publisher) || ""
+    readonly property string siblingsLine: (function() {
+      var c = root.eventCtx
+      if (!c) return ""
+      var parts = []
+      if (edp.hasApp && typeof c.app_count === "number") parts.push(c.app_count + "× this app")
+      if (typeof c.kind_count === "number") parts.push(c.kind_count + "× of this kind")
+      return parts.length ? "This week: " + parts.join(" · ") : ""
+    })()
+    readonly property var ctxPills: (function() {
+      var s = root.eventCtx && root.eventCtx.state
+      if (!s) return []
+      var arr = [
+        { k: "CPU", v: Math.round(s.cpu) + "%" },
+        { k: "MEM", v: (s.mem_pct || 0) + "%" },
+        { k: "GPU", v: Math.round(s.gpu) + "%" },
+        { k: "PROCS", v: "" + s.procs }
+      ]
+      if (s.cpu_temp) arr.push({ k: "CPU TMP", v: s.cpu_temp + "°" })
+      if (s.gpu_temp) arr.push({ k: "GPU TMP", v: s.gpu_temp + "°" })
+      return arr
+    })()
 
     Rectangle {
       anchors.fill: parent
@@ -2423,6 +2879,14 @@ PanelWindow {
         }
         Text {
           width: edpBody.width
+          text: root.eventKindExplain(edp.ev.kind || "")
+          wrapMode: Text.WordWrap
+          color: root.dim1
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+        }
+        Text {
+          width: edpBody.width
           text: edp.ev.msg || ""
           wrapMode: Text.WordWrap
           color: root.fg
@@ -2431,6 +2895,90 @@ PanelWindow {
         }
         Text {
           text: root.fmtFullDate(edp.ev.ts || 0)
+          color: root.dim2
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+        }
+        Text {
+          visible: edp.loading
+          text: "Loading context\u2026"
+          color: root.dim2
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+          font.italic: true
+        }
+        Rectangle {
+          visible: edp.hasApp && !edp.loading
+          width: edpBody.width
+          color: edp.typed.a < 0.05 ? root.surface : Qt.rgba(edp.typed.r, edp.typed.g, edp.typed.b, 0.08)
+          radius: Style.space(10)
+          border.width: 1
+          border.color: Qt.rgba(edp.typed.r, edp.typed.g, edp.typed.b, 0.25)
+          Column {
+            anchors.fill: parent
+            anchors.margins: Style.space(10)
+            spacing: Style.space(4)
+            Text {
+              visible: edp.verifiedLine !== ""
+              text: edp.verifiedLine
+              color: edp.ctxAppVerified ? "#3cb371" : "#e0a030"
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+            Text {
+              visible: edp.ctxAppPublisher !== "" && edp.verifiedLine === ""
+              text: edp.ctxAppPublisher
+              color: root.dim1
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+            }
+            Text {
+              visible: edp.appDesc !== ""
+              width: edpBody.width - Style.space(22)
+              text: edp.appDesc
+              wrapMode: Text.WordWrap
+              color: root.dim1
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+        Row {
+          visible: edp.ctxPills.length > 0
+          spacing: Style.space(6)
+          Repeater {
+            model: edp.ctxPills
+            delegate: Rectangle {
+              width: Style.space(56)
+              height: Style.space(34)
+              radius: Style.space(8)
+              color: root.accentSoft
+              Column {
+                anchors.centerIn: parent
+                spacing: Style.space(1)
+                Text {
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  text: modelData.v
+                  color: root.fg
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+                Text {
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  text: modelData.k
+                  color: root.dim2
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+            }
+          }
+        }
+        Text {
+          visible: edp.siblingsLine !== ""
+          text: edp.siblingsLine
           color: root.dim2
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
@@ -2503,130 +3051,6 @@ PanelWindow {
     }
   }
 
-  component PublisherGroup: Item {
-    id: pg
-    property var group: ({})
-    signal bulkKill(var names)
-    signal bulkDisable(var names)
-    signal details(var app)
-    signal kill(string name)
-    signal disable(string name)
-    signal enable(string name)
-    property bool actionsOpen: false
-    implicitHeight: (pg.actionsOpen ? Style.space(54) : Style.space(30))
-                     + (pg.group.apps || []).length * Style.space(36)
-    width: parent ? parent.width : 0
-    clip: true
-
-    Rectangle {
-      anchors.fill: parent
-      radius: Style.space(12)
-      color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.04)
-      border.width: 1
-      border.color: Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.10)
-    }
-
-    Rectangle {
-      id: pgHeader
-      anchors.top: parent.top
-      anchors.left: parent.left
-      anchors.right: parent.right
-      height: Style.space(30)
-      radius: Style.space(12)
-      color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.10)
-
-      MouseArea {
-        anchors.fill: parent
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: pg.actionsOpen = !pg.actionsOpen
-      }
-      Text {
-        anchors.left: parent.left
-        anchors.leftMargin: Style.space(10)
-        anchors.verticalCenter: parent.verticalCenter
-        text: "\uf022  " + (pg.group.publisher || "Unknown")
-        color: root.fg
-        font.family: root.contentFontFamily
-        font.pixelSize: Style.font.caption
-        font.bold: true
-      }
-      Text {
-        anchors.left: parent.left
-        anchors.leftMargin: Style.space(220)
-        anchors.verticalCenter: parent.verticalCenter
-        text: (pg.group.noteCount || 0) + " apps · " + (pg.group.runningCount || 0) + " running"
-            + ((pg.group.disabledCount || 0) ? " · " + pg.group.disabledCount + " disabled" : "")
-        color: root.dim1
-        font.family: root.contentFontFamily
-        font.pixelSize: Style.font.caption
-      }
-      Rectangle {
-        anchors.right: parent.right
-        anchors.rightMargin: Style.space(160)
-        anchors.verticalCenter: parent.verticalCenter
-        width: pg.actionsOpen ? Style.space(0) : Style.space(24)
-        height: Style.space(16)
-        radius: Style.space(8)
-        color: pg.actionsOpen ? "transparent" : root.accentSoft
-        Text {
-          anchors.centerIn: parent
-          text: "\uf054"
-          color: root.dim1
-          font.family: root.contentFontFamily
-          font.pixelSize: Style.font.caption
-        }
-      }
-      Row {
-        anchors.right: parent.right
-        anchors.rightMargin: Style.space(8)
-        anchors.verticalCenter: parent.verticalCenter
-        visible: pg.actionsOpen
-        spacing: Style.space(6)
-        ActionChip {
-          label: "Kill all running"
-          danger: true
-          onChosen: {
-            var names = []
-            var a = pg.group.apps || []
-            for (var i = 0; i < a.length; i++) if (a[i].running) names.push(a[i].name)
-            pg.bulkKill(names)
-          }
-        }
-        ActionChip {
-          label: "Disable all"
-          onChosen: {
-            var names = []
-            var b = pg.group.apps || []
-            for (var j = 0; j < b.length; j++) if (!b[j].disabled) names.push(b[j].name)
-            pg.bulkDisable(names)
-          }
-        }
-        ActionChip { label: "Close menu"; onChosen: pg.actionsOpen = false }
-      }
-    }
-
-    Column {
-      anchors.top: pgHeader.bottom
-      anchors.left: parent.left
-      anchors.right: parent.right
-      anchors.topMargin: Style.space(4)
-      spacing: Style.space(4)
-      Repeater {
-        model: pg.group.apps || []
-        delegate: AppRow {
-          width: pg.width
-          app: modelData
-          showPublisher: false
-          onDetails: pg.details(modelData)
-          onKill: pg.kill(modelData.name)
-          onDisable: pg.disable(modelData.name)
-          onEnable: pg.enable(modelData.name)
-        }
-      }
-    }
-  }
-
   component DetailsPanel: Item {
     id: dp
     property var app: null
@@ -2660,7 +3084,7 @@ PanelWindow {
         { k: "PEAK MEM", v: r(s.max_mem_mb) + " MB" },
         { k: "AVG MEM", v: r(s.avg_mem_mb) + " MB" },
         { k: "PEAK GPU", v: r(s.max_gpu) + " %" },
-        { k: "PEAK I/O", v: r(s.max_io_kbs) + " KB/s" }
+        { k: "PEAK I/O", v: root.fmtNetFull(s.max_io_kbs) }
       ]
     }
     function stampLine() {
@@ -2670,9 +3094,9 @@ PanelWindow {
     }
     function cpuNote() {
       if (!dp.stats) return ""
-      var m = Math.max(dp.stats.max_cpu, dp.stats.avg_cpu)
-      if (m <= 100) return ""
-      return "CPU is % of one core — " + Math.round(m) + "% ≈ " + Math.round(m / 10) / 10 + " cores of parallel work"
+      var cores = dp.stats.cores || 0
+      return (cores > 1 ? "CPU is an average across all " + Math.round(cores)
+              + " cores — 100% means one core fully busy" : "CPU is shown per core — 100% = one core fully busy")
     }
     function netLine() {
       if (dp.netInfo) {
@@ -2695,13 +3119,12 @@ PanelWindow {
       var s = dp.stats
       function r(x) { return Math.round(x * 10) / 10 }
       var arr = []
-      arr.push({ h: "PEAK CPU", d: "% of one core, summed across threads" +
-        (s.max_cpu > 100 ? " — " + s.max_cpu + "% ≈ " + r(s.max_cpu / 100) + " cores" : "") })
+      arr.push({ h: "PEAK CPU", d: "average across all cores — 100% means one core fully busy" })
       arr.push({ h: "AVG CPU", d: "mean of the above across all tracked samples" })
       arr.push({ h: "PEAK MEM", d: "largest resident RAM footprint in MB" })
       arr.push({ h: "AVG MEM", d: "mean resident RAM footprint in MB" })
       arr.push({ h: "PEAK GPU", d: "GPU utilization %, sampled while it was the top GPU process" })
-      arr.push({ h: "PEAK I/O", d: "highest disk throughput (read + write) in KB/s" })
+      arr.push({ h: "PEAK I/O", d: "highest disk throughput (read + write), auto-scaled KB/s → MB/s → GB/s" })
       arr.push({ h: "NET", d: "live TCP/UDP socket count for this app right now" })
       return arr
     }
@@ -2773,8 +3196,7 @@ PanelWindow {
       anchors.leftMargin: Style.space(12)
       anchors.right: parent.right
       anchors.rightMargin: Style.space(12)
-      text: "Publisher: " + (dp.app && dp.app.publisher || "Unknown")
-          + "   ·   " + (dp.app && dp.app.source || "unknown")
+      text: (dp.app && dp.app.source || "unknown")
           + "   ·   disabled: " + (dp.app && dp.app.disabled ? "yes" : "no")
           + "   ·   instances: " + (dp.app ? (dp.app.instances !== undefined ? dp.app.instances : (dp.app.pids ? dp.app.pids.length : 0)) : 0)
       color: root.dim1
@@ -2790,7 +3212,10 @@ PanelWindow {
       anchors.leftMargin: Style.space(12)
       anchors.right: parent.right
       anchors.rightMargin: Style.space(12)
-      text: (dp.app && dp.app.desc) || "No description available for this binary."
+      text: (dp.app && dp.app.desc && dp.app.desc.trim() !== "")
+        ? dp.app.desc
+        : ((dp.app && dp.app.exe) ? ("Binary: " + dp.app.exe + " — no description available.")
+                                  : "No description available for this binary.")
       color: root.dim1
       font.family: root.contentFontFamily
       font.pixelSize: Style.font.caption
@@ -3176,6 +3601,7 @@ PanelWindow {
     id: ch
     property string leftLabel: "PROCESS"
     property string midLabel: "TRUST"
+    property real midX: Style.space(306)
     height: Style.space(16)
     width: parent ? parent.width : 0
 
@@ -3199,7 +3625,7 @@ PanelWindow {
     Text {
       visible: ch.midLabel !== ""
       anchors.left: parent.left
-      anchors.leftMargin: Style.space(306)
+      anchors.leftMargin: ch.midX
       anchors.verticalCenter: parent.verticalCenter
       text: ch.midLabel
       color: root.dim2
@@ -3207,13 +3633,13 @@ PanelWindow {
       font.pixelSize: Style.font.caption
       font.bold: true
     }
-    // Right columns mirror ProcRow's fixed right-side geometry so the labels
-    // sit directly over the data they describe.
+    // Right columns mirror ProcRow/AppRow's fixed right-side geometry so the
+    // labels sit directly over the data they describe.
     Text {
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(8)
+      anchors.rightMargin: Style.space(40)
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(64)
+      width: Style.space(60)
       horizontalAlignment: Text.AlignHCenter
       text: "CPU"
       color: root.dim2
@@ -3223,9 +3649,9 @@ PanelWindow {
     }
     Text {
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(110)
+      anchors.rightMargin: Style.space(112)
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(44)
+      width: Style.space(48)
       horizontalAlignment: Text.AlignHCenter
       text: "MEM"
       color: root.dim2
@@ -3235,11 +3661,59 @@ PanelWindow {
     }
     Text {
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(230)
+      anchors.rightMargin: Style.space(176)
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(100)
+      width: Style.space(48)
+      horizontalAlignment: Text.AlignHCenter
+      text: "GPU"
+      color: root.dim2
+      font.family: root.contentFontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+    Text {
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(240)
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(56)
+      horizontalAlignment: Text.AlignHCenter
+      text: "DISK"
+      color: root.dim2
+      font.family: root.contentFontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+    Text {
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(312)
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(56)
+      horizontalAlignment: Text.AlignHCenter
+      text: "NET"
+      color: root.dim2
+      font.family: root.contentFontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+    Text {
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(380)
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(96)
       horizontalAlignment: Text.AlignHCenter
       text: "TREND"
+      color: root.dim2
+      font.family: root.contentFontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+    Text {
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(476)
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(60)
+      horizontalAlignment: Text.AlignHCenter
+      text: "PID"
       color: root.dim2
       font.family: root.contentFontFamily
       font.pixelSize: Style.font.caption
@@ -3250,11 +3724,11 @@ PanelWindow {
   component ProcRow: Item {
     id: pr
     property string name: ""
+    property int pid: 0
     property real cpu: 0
     property real mem: 0
     property real io: 0
-    property real gpu: 0
-    property string publisher: "Unknown"
+property real gpu: 0
     property bool verified: false
     property var perms: []
     property int instances: 1
@@ -3296,20 +3770,9 @@ PanelWindow {
       font.pixelSize: Style.font.caption
       font.bold: pr.critical
     }
-    Text {
-      anchors.left: prName.right
-      anchors.leftMargin: Style.space(8)
-      anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(120)
-      elide: Text.ElideRight
-      text: pr.publisher
-      color: root.dim1
-      font.family: root.contentFontFamily
-      font.pixelSize: Style.font.caption
-    }
     Row {
       anchors.left: prName.right
-      anchors.leftMargin: Style.space(136)
+      anchors.leftMargin: Style.space(8)
       anchors.verticalCenter: parent.verticalCenter
       spacing: Style.space(4)
       Rectangle {
@@ -3322,6 +3785,22 @@ PanelWindow {
           anchors.centerIn: parent
           text: "\uf05e Disabled"
           color: root.dim1
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
+      Rectangle {
+        visible: pr.verified
+        width: Style.space(62)
+        height: Style.space(14)
+        radius: Style.space(7)
+        color: Qt.rgba(0.3, 0.75, 0.45, 0.18)
+        border.width: 1
+        border.color: Qt.rgba(0.3, 0.75, 0.45, 0.5)
+        Text {
+          anchors.centerIn: parent
+          text: "\uf058 Verified"
+          color: "#3fbf6f"
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
         }
@@ -3377,45 +3856,73 @@ PanelWindow {
     }
     Sparkline {
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(230)
+      anchors.rightMargin: Style.space(380)
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(100)
+      width: Style.space(96)
       height: Style.space(14)
       data: pr.sparks
     }
     Text {
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(164)
+      anchors.rightMargin: Style.space(476)
       anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(60)
+      horizontalAlignment: Text.AlignHCenter
+      text: pr.pid > 0 ? String(pr.pid) : ""
+      color: root.dim1
+      font.family: root.contentFontFamily
+      font.pixelSize: Style.font.caption
+    }
+    Text {
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(312)
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(56)
+      horizontalAlignment: Text.AlignHCenter
+      text: root.fmtNet((root.sample.net_rx_kbs || 0) + (root.sample.net_tx_kbs || 0))
+      color: root.dim1
+      font.family: root.contentFontFamily
+      font.pixelSize: Style.font.caption
+    }
+    Text {
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(240)
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(56)
+      horizontalAlignment: Text.AlignHCenter
+      text: root.fmtNet(pr.io)
+      color: root.dim1
+      font.family: root.contentFontFamily
+      font.pixelSize: Style.font.caption
+    }
+    Text {
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(176)
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(48)
+      horizontalAlignment: Text.AlignHCenter
+      text: Math.round(pr.gpu) + "%"
+      color: root.dim1
+      font.family: root.contentFontFamily
+      font.pixelSize: Style.font.caption
+    }
+    Text {
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(112)
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(48)
+      horizontalAlignment: Text.AlignHCenter
       text: Math.round(pr.mem) + "%"
       color: root.dim1
       font.family: root.contentFontFamily
       font.pixelSize: Style.font.caption
     }
     Rectangle {
-      id: prMemBar
-      anchors.right: parent.right
-      anchors.rightMargin: Style.space(110)
-      anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(44)
-      height: Style.space(6)
-      radius: Style.space(3)
-      color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.18)
-      Rectangle {
-        anchors.left: parent.left
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        width: parent.width * Math.min(1, pr.mem / 100)
-        radius: Style.space(3)
-        color: root.accent
-      }
-    }
-    Rectangle {
       id: prCpu
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(8)
+      anchors.rightMargin: Style.space(40)
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(64)
+      width: Style.space(60)
       height: Style.space(16)
       radius: Style.space(8)
       color: pr.critical ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.14)
@@ -3592,7 +4099,7 @@ PanelWindow {
         ctx.fillStyle = root.dim2
         ctx.font = "9px " + root.contentFontFamily
         ctx.textAlign = "right"
-        ctx.fillText("" + Math.round(gv), w - rightPad - 2, gy - 2)
+        ctx.fillText(gv < 10 ? ("" + (gv % 1 !== 0 ? gv.toFixed(1) : Math.round(gv))) : ("" + Math.round(gv)), w - rightPad - 2, gy - 2)
       }
 
       ctx.fillStyle = root.dim2

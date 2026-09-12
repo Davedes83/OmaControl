@@ -49,6 +49,46 @@ CORE_DESC = {
     "grim": "Screenshot tool",
 }
 
+# Kernel threads have no userspace binary — classify by name so they get a
+# meaningful description instead of "unknown".
+KWORKER_TASK = {
+    "btrfs-endio": "deferred read/write I/O completion for the btrfs filesystem",
+    "btrfs-cow": "copy-on-write background work for the btrfs filesystem",
+    "btrfs-fixup": "checksum fix-up work for the btrfs filesystem",
+    "btrfs-dio": "direct-I/O completion for the btrfs filesystem",
+    "btrfs-delalloc": "delayed-allocation flushing for the btrfs filesystem",
+    "btrfs-freespace": "free-space management for the btrfs filesystem",
+    "kcryptd": "on-the-fly dm-crypt disk encryption/decryption",
+    "flush-": "flush writeback of dirty pages to a block device",
+    "events": "general deferred kernel event processing",
+    "events_power_efficient": "power-optimized deferred kernel event processing",
+    "mm_percpu_wq": "memory-management per-CPU workqueue",
+    "netns": "network-namespace cleanup work",
+}
+
+KTHREADS = [
+    (r"^kworker/[^/]+-(.*)$", "kworker"),
+    (r"^kworker\b|^kworker/\d+:\d+$|^kworker/u\d+:\d+$", None),
+    (r"^kswapd\d*$", "kswapd — the kernel swap daemon; reclaims memory pages when the system is under pressure."),
+    (r"^ksoftirqd(?:/\d+)?$", "ksoftirqd — kernel thread that processes deferred software interrupts."),
+    (r"^kcompactd\d*$", "kcompactd — memory-compaction daemon; defragments memory for large/long-lived allocations."),
+    (r"^khugepaged$", "khugepaged — kernel daemon that promotes regular pages into huge pages."),
+    (r"^kthreadd$", "kthreadd — the kernel thread forker; spawns and supervises every other kernel thread."),
+    (r"^rcu[a-z_]*$|^rcu[a-z_]*/\d+$", "RCU — Read-Copy-Update kernel workers; track grace periods and reclaim kernel memory."),
+    (r"^migration/\d+$", "migration — per-CPU kernel thread that moves tasks between CPUs for load balancing."),
+    (r"^watchdog/\d+$|^watchdogd$", "watchdog — per-CPU kernel thread driving the hardware watchdog."),
+    (r"^cpuhp/\d+$", "cpuhp — CPU hotplug control thread."),
+    (r"^kblockd$", "kblockd — block-layer workqueue; processes request queues for block devices."),
+    (r"^kdevtmpfs$", "kdevtmpfs — maintains device nodes in devtmpfs (/dev)."),
+    (r"^kcryptd$", "kcryptd — device-mapper crypt worker; does on-the-fly disk encryption/decryption."),
+    (r"^dmcrypt_write$", "dmcrypt_write — device-mapper crypt write worker."),
+    (r"^k*dm-flush|^kdmflush$|^dm-bufio", "device-mapper background I/O worker (LVM/dm-crypt)."),
+    (r"^kjournald\d*$|^jbd2/", "Journalling thread — writes filesystem journal transactions (ext4/btrfs) for crash safety."),
+    (r"^oom_reaper$", "oom_reaper — out-of-memory killer thread; reaps processes the OOM killer condemned."),
+    (r"^kthrotld$", "kthrotld — block-device I/O throttling thread (blk-throttle)."),
+    (r"^memcg.*$", "memcg — memory control-group kernel worker."),
+]
+
 def sh(args, timeout=12):
     try:
         r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
@@ -70,6 +110,14 @@ def describe(name):
     except Exception:
         return ""
 
+def cmdline_of(pid):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            data = f.read().decode("utf-8", "replace").split("\0")
+        return [a for a in data if a]
+    except Exception:
+        return []
+
 def resolve(name, pid):
     """Return (exe, pkg, publisher, desc, verified, source)."""
     exe = sh(["readlink", f"/proc/{pid}/exe"])
@@ -77,8 +125,25 @@ def resolve(name, pid):
         exe = sh(["which", name])
     if name in CORE:
         return (exe, "", "Omarchy core", CORE_DESC.get(name, "Core system component"), 1, "system")
+    # Kernel threads have no userspace binary — classify by name.
+    for pat, d in KTHREADS:
+        m = re.match(pat, name)
+        if m:
+            if d == "kworker":
+                t = m.group(1)
+                desc = "Kernel worker thread — " + KWORKER_TASK.get(t,
+                    "deferred background work (workqueue task: %s)" % t) + "."
+            else:
+                desc = d
+            return (exe, "", "Linux kernel", desc, 1, "system")
     if not exe:
-        return (exe, "", "Unknown", "", 0, "unknown")
+        args = cmdline_of(pid)
+        desc = ""
+        if args:
+            if args[0].startswith("/") and os.path.exists(args[0]) and not desc:
+                exe = args[0]
+            desc = "Command: " + " ".join(args)[:110]
+        return (exe, "", "Unknown", desc, 0, "unknown")
     # Flatpak app dirs
     if re.search(r"/(?:var/lib|home/|\.)flatpak/(?:app|repo)/", exe) or exe.startswith("/var/lib/flatpak"):
         m = re.search(r"flatpak/app/([^/]+)", exe)
@@ -103,7 +168,12 @@ def resolve(name, pid):
     # Last resort — the process-info dictionary (shells, launchers, convenience
     # binaries that no single package cleanly owns).
     desc = describe(name)
-    return (exe, "", "Unknown", desc, 0, "unknown")
+    if not desc or "Unknown system process" in desc:
+        args = cmdline_of(pid)
+        if args:
+            cmd = " ".join(args)[:110]
+            desc = "Command: " + cmd if not desc else desc + " · " + cmd
+    return (exe, "", "Unknown", desc[:120], 0, "unknown")
 
 def main():
     con = sqlite3.connect(DB, timeout=8)

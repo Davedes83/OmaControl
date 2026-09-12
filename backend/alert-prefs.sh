@@ -1,14 +1,16 @@
 #!/bin/sh
-# OmControl alert preferences — per-event-type notification mode.
+# OmControl alert preferences — per-event-type notification mode + chart markers.
 # Modes: toast  = top-right desktop popup + bell badge
 #        notify = bell badge only
-#        none   = quiet (still logged as history/chart markers)
-# Usage: alert-prefs.sh get | set <type> <toast|notify|none> | set-enabled <on|off>
+#        none   = quiet (still logged in the events history)
+# Chart markers are independent: charts.<type> on|off decides whether that
+# event kind is drawn as a pin on the history chart.
+# Usage: alert-prefs.sh get | set <type> <toast|notify|none> | set-chart <type> <on|off> | set-enabled <on|off>
 DATA_DIR="${OMCONTROL_DATA_DIR:-$HOME/.local/share/omcontrol}"
 PREFS="${OMCONTROL_ALERT_PREFS:-$DATA_DIR/alert_prefs.json}"
 mkdir -p "$DATA_DIR"
 
-DEFAULT='{"enabled":true,"types":{"New App Launch":"toast","Mic or Cam Access":"notify","Service Change":"none","Unsigned App Launch":"notify","Location Tracking":"none","New Service Launch":"none","App Update":"notify","New Suspicious App":"notify"}}'
+DEFAULT='{"enabled":true,"types":{"New App Launch":"toast","Mic or Cam Access":"notify","Service Change":"none","Unsigned App Launch":"notify","Location Tracking":"none","New Service Launch":"none","App Update":"notify","New Suspicious App":"notify","App Exit":"none"},"charts":{"App Exit":false}}'
 
 if [ ! -f "$PREFS" ]; then
   echo "$DEFAULT" > "$PREFS"
@@ -43,6 +45,7 @@ def load():
     if not isinstance(d, dict):
         d = {"enabled": True, "types": {}}
     d.setdefault("types", {})
+    d.setdefault("charts", {})
     d.setdefault("enabled", True)
     changed = False
     for t, v in list(d["types"].items()):
@@ -71,7 +74,15 @@ elif ACTION == "set":
     d["types"][TYPE] = VAL
     open(p, "w").write(json.dumps(d, indent=2))
     print("ok")
+elif ACTION == "set-chart":
+    if VAL not in ("on", "off"):
+        print("value must be on|off", file=sys.stderr)
+        sys.exit(1)
+    d, _ = load()
+    d["charts"][TYPE] = (VAL == "on")
+    open(p, "w").write(json.dumps(d, indent=2))
+    print("ok")
 else:
-    print("usage: alert-prefs.sh <get|set TYPE toast|notify|none|set-enabled on|off>", file=sys.stderr)
+    print("usage: alert-prefs.sh <get|set TYPE toast|notify|none|set-chart TYPE on|off|set-enabled on|off>", file=sys.stderr)
     sys.exit(1)
 PY
