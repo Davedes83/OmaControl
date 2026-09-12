@@ -72,10 +72,13 @@ PanelWindow {
   property int eventBadge: 0
   property var alertPrefs: ({ enabled: true, types: {} })
   property var detailApp: null
+  property var eventDetail: null
   property var detailStats: null
   property bool detailStatsBusy: false
   property var detailNet: null
   property bool detailNetBusy: false
+  property var procDetail: []
+  property bool procDetailBusy: false
 
   property var barPrefs: ({ stats: ["cpu", "cputemp"], mode: "icon" })
   property bool barPrefsLoaded: false
@@ -100,6 +103,8 @@ PanelWindow {
       case "procs": return root.sample.procs
       case "disk": return root.sample.disk
       case "net": return "\u2193 " + root.fmtNet(root.sample.net_rx_kbs) + "   \u2191 " + root.fmtNet(root.sample.net_tx_kbs)
+      case "ctemp": return root.sample.ctemp || 0
+      case "gtemp": return root.sample.gtemp || 0
     }
     return 0
   }
@@ -134,6 +139,16 @@ PanelWindow {
     return pts
   }
 
+  function tempSeriesFor(windowSecs) {
+    var list = windowSecs >= 86400 ? root.sample.history_1d
+             : windowSecs >= 21600 ? root.sample.history_6h : root.sample.history_1h
+    var pts = []
+    for (var i = 0; i < list.length; i++) {
+      pts.push({ ts: list[i].ts, ctemp: list[i].ctemp || 0, gtemp: list[i].gtemp || 0 })
+    }
+    return pts
+  }
+
   function nearestSnap(ts) {
     var snaps = root.sample.snaps
     if (!snaps.length) return null
@@ -163,6 +178,29 @@ PanelWindow {
     if (s < 3600) return Math.floor(s / 60) + "m ago"
     if (s < 86400) return Math.floor(s / 3600) + "h ago"
     return Math.floor(s / 86400) + "d ago"
+  }
+
+  function fmtFullDate(ts) {
+    return Qt.formatDateTime(new Date(ts * 1000), "yyyy-MM-dd HH:mm:ss")
+  }
+
+  function eventTypeColor(kind) { return Model.eventTypeColor(kind) }
+  function eventIcon(kind) { return Model.eventIcon(kind) }
+  function eventKindLabel(kind) {
+    if (kind === "app_launch" || kind === "new_app") return "Launch"
+    if (kind === "app_exit") return "Exit"
+    if (kind === "cpu_spike" || kind === "mem_spike") return "Spike"
+    if (kind === "mic_access") return "Mic access"
+    if (kind === "cam_access") return "Camera access"
+    if (kind === "location_access") return "Location access"
+    if (kind === "permission") return "Permission"
+    if (kind === "publisher_block" || kind === "unsigned_launch" || kind === "unknown_app") return "Security"
+    if (kind === "suspicious_app") return "Suspicious app"
+    if (kind === "service_change") return "Service change"
+    if (kind === "service_launch") return "Service launch"
+    if (kind === "app_update") return "App update"
+    if (kind.indexOf("user_") === 0) return "Action"
+    return (kind || "Event").toUpperCase()
   }
 
   // Merge the running apps with the known-apps catalog into one inventory,
@@ -289,15 +327,21 @@ PanelWindow {
   }
 
   function updateBadges() {
+    var alertsOn = root.alertPrefs.enabled !== false
     var alerts = root.sample.alerts || []
     var crit = 0
     for (var i = 0; i < alerts.length; i++) {
       if (alerts[i].severity === "critical") crit++
     }
-    root.alertBadge = crit
+    root.alertBadge = alertsOn ? crit : 0
     var ev = root.sample.events || []
     var unread = 0
-    for (var j = 0; j < ev.length; j++) if (!ev[j].read) unread++
+    for (var j = 0; j < ev.length; j++) {
+      if (!alertsOn || ev[j].read) continue
+      var sens = root.sensitivityForKind(ev[j].kind)
+      if (sens && root.alertMode(sens) === "none") continue
+      unread++
+    }
     root.eventBadge = unread
   }
 
@@ -364,6 +408,44 @@ PanelWindow {
     netProc.running = true
   }
 
+  function loadProcDetail(nm) {
+    if (!nm) {
+      root.procDetail = []
+      return
+    }
+    root.procDetailBusy = true
+    procDetailProc.command = [Qt.resolvedUrl("backend/process-detail.sh").toString().replace("file://", ""), nm]
+    procDetailProc.running = true
+  }
+
+  function pidsFor(name) {
+    var arr = root.sample.p_list || []
+    var out = []
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i].name === name && arr[i].pid) out.push(arr[i].pid)
+    }
+    return out
+  }
+
+  function toggleProcRows() {
+    detailsPanel.procOpen = !detailsPanel.procOpen
+    if (!detailsPanel.procOpen) detailsPanel.procShowAll = false
+    return detailsPanel.procOpen
+  }
+
+  function procRowsInfo() {
+    return JSON.stringify({ open: detailsPanel.procOpen, n: (root.procDetail || []).length })
+  }
+
+  function fmtDur(s) {
+    s = Math.max(0, Math.floor(s || 0))
+    var d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60)
+    if (d > 0) return d + "d " + h + "h"
+    if (h > 0) return h + "h " + m + "m"
+    if (m > 0) return m + "m " + (s % 60) + "s"
+    return s + "s"
+  }
+
   // Disable with confirm; enable is non-destructive so goes straight through.
   function disableApp(name) { root.confirmedDisable(name) }
   function enableApp(name) { root.appAction("enable", name) }
@@ -417,8 +499,43 @@ PanelWindow {
   function markEventRead(id) { root.runBackend("events.sh", ["read", "" + id]) ; missingNsTimer() }
   function markAllEventsRead() { root.runBackend("events.sh", ["read-all"]); missingNsTimer() }
   function clearEvents() { root.runBackend("events.sh", ["clear"]); missingNsTimer() }
-  function setAlertPref(type, on) { root.runBackend("alert-prefs.sh", ["set", type, on ? "on" : "off"]) }
+  function setAlertPref(type, mode) { root.runBackend("alert-prefs.sh", ["set", type, mode]) }
   function setAlertsEnabled(on) { root.runBackend("alert-prefs.sh", ["set-enabled", on ? "on" : "off"]) }
+  function setAlertMode(type, mode) {
+    var types = {}; var src = root.alertPrefs.types || {}
+    for (var k in src) types[k] = src[k]
+    types[type] = mode
+    root.alertPrefs = ({ "enabled": root.alertPrefs.enabled, "types": types })
+    root.setAlertPref(type, mode)
+    root.refreshSoon()
+  }
+
+  // Normalized per-sensitivity notification mode: "toast" | "notify" | "none".
+  // Handles legacy boolean prefs (true meant notify, but toast for new apps).
+  function alertMode(type) {
+    var v = (root.alertPrefs.types || {})[type]
+    if (v === true) return type === "New App Launch" ? "toast" : "notify"
+    if (v === false) return "none"
+    if (v === "toast" || v === "notify" || v === "none") return v
+    return "none"
+  }
+
+  // Event kind → alert sensitivity label (bell-badge gating).
+  // Every kind the toast funnel knows is mapped so a "none" mode can silence
+  // the bell for it; kinds without a mapping always count when alerts are on.
+  function sensitivityForKind(kind) {
+    var map = {
+      "app_launch": "New App Launch",
+      "mic_access": "Mic or Cam Access", "cam_access": "Mic or Cam Access", "permission": "Mic or Cam Access",
+      "location_access": "Location Tracking",
+      "unsigned_launch": "Unsigned App Launch", "unknown_app": "Unsigned App Launch", "publisher_block": "Unsigned App Launch",
+      "suspicious_app": "New Suspicious App",
+      "service_change": "Service Change",
+      "service_launch": "New Service Launch",
+      "app_update": "App Update"
+    }
+    return map[kind] || null
+  }
   function refreshSoon() { refreshTimer.start() }
 
   onSampleChanged: root.onSampleReceived()
@@ -495,6 +612,19 @@ PanelWindow {
     }
   }
   Process {
+    id: procDetailProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.procDetailBusy = false
+        try {
+          var parsed = JSON.parse(text)
+          root.procDetail = (parsed && parsed.pids) ? parsed.pids : []
+        } catch (e) { root.procDetail = [] }
+      }
+    }
+  }
+  Process {
     id: barPrefsLoadProc
     stdout: StdioCollector {
       waitForEnd: true
@@ -515,7 +645,11 @@ PanelWindow {
   }
   function missingNsTimer() { refreshTimer.start() }
 
-  onDetailAppChanged: { root.loadStats(root.detailApp ? root.detailApp.name : ""); root.loadNet(root.detailApp ? root.detailApp.name : "") }
+  onDetailAppChanged: {
+    root.loadStats(root.detailApp ? root.detailApp.name : "")
+    root.loadNet(root.detailApp ? root.detailApp.name : "")
+    root.loadProcDetail(root.detailApp ? root.detailApp.name : "")
+  }
   onOpenChanged: {
     if (root.open) {
       if (!root.sampleProcRunning) {
@@ -643,8 +777,7 @@ PanelWindow {
             visible: !root.compact
             anchors.top: parent.top
             anchors.left: parent.left
-            anchors.right: parent.right
-            spacing: Style.space(8)
+            spacing: Style.space(16)
 
             OMCPill { label: "CPU"; value: root.liveValue("cpu") + "%"; active: root.selMetric === "cpu"; onChosen: root.selMetric = "cpu" }
             OMCPill { label: "Memory"; value: root.liveValue("mem") + "%"; active: root.selMetric === "mem"; onChosen: root.selMetric = "mem" }
@@ -652,8 +785,14 @@ PanelWindow {
             OMCPill { label: "Processes"; value: Math.round(root.liveValue("procs")); active: root.selMetric === "procs"; onChosen: root.selMetric = "procs" }
             OMCPill { label: "Disk"; value: root.liveValue("disk") + "%"; active: root.selMetric === "disk"; onChosen: root.selMetric = "disk" }
             OMCPill { label: "Net"; value: root.liveValue("net"); active: root.selMetric === "net"; onChosen: root.selMetric = "net" }
+          }
 
-            Item { width: Style.space(20); height: 1 }
+          Row {
+            id: rangeRow
+            visible: !root.compact
+            anchors.top: parent.top
+            anchors.right: parent.right
+            spacing: Style.space(8)
 
             RangePill { seconds: 3600; active: root.chartWindow === 3600; onChosen: root.chartWindow = 3600 }
             RangePill { seconds: 21600; active: root.chartWindow === 21600; onChosen: root.chartWindow = 21600 }
@@ -699,10 +838,23 @@ PanelWindow {
             }
           }
 
+          TemperatureStrip {
+            id: tempStrip
+            visible: !root.compact
+            anchors.top: graph.bottom
+            anchors.topMargin: Style.space(4)
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: Style.space(34)
+            pts: root.tempSeriesFor(root.chartWindow)
+            domainStart: graph.domStart
+            domainEnd: graph.domEnd
+          }
+
           MiniOverview {
             id: mini
             visible: !root.compact
-            anchors.top: graph.bottom
+            anchors.top: tempStrip.bottom
             anchors.topMargin: Style.space(6)
             anchors.left: parent.left
             anchors.right: parent.right
@@ -791,7 +943,6 @@ PanelWindow {
               anchors.right: parent.right
               leftLabel: "PROCESS"
               midLabel: "TRUST"
-              rightLabel: "TREND     MEM     CPU"
             }
 
             ListView {
@@ -822,6 +973,7 @@ PanelWindow {
                   source: modelData.source, desc: modelData.desc || "",
                   exe: modelData.exe || "", pkg: modelData.pkg || "",
                   perms: modelData.perms || [], disabled: modelData.disabled,
+                  pids: root.pidsFor(modelData.name),
                   cpu: modelData.cpu, mem: modelData.mem, instances: modelData.instances })
                 onKill: root.appAction("kill", modelData.name)
                 onDisable: root.disableApp(modelData.name)
@@ -908,7 +1060,6 @@ PanelWindow {
             anchors.right: parent.right
             leftLabel: "APP"
             midLabel: "TRUST"
-            rightLabel: "TREND     MEM     CPU"
           }
 
           ListView {
@@ -970,7 +1121,14 @@ PanelWindow {
             anchors.left: parent.left
             anchors.right: parent.right
             spacing: Style.space(8)
-            OMCPill { label: "Alerts config"; active: true; onChosen: {} }
+            Text {
+              text: "\uf013  Alerts config"
+              color: root.fg
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.body
+              font.bold: true
+              anchors.verticalCenter: parent.verticalCenter
+            }
             Item { width: Style.space(10); height: 1 }
             OMCPill {
               label: root.alertPrefs.enabled ? "Alerts ON" : "Alerts OFF"
@@ -990,7 +1148,7 @@ PanelWindow {
             anchors.topMargin: Style.space(38)
             anchors.left: parent.left
             anchors.right: parent.right
-            text: "What can show as Events · move an item between 'Notify' and 'Quiet' buckets"
+            text: "Per event type, pick how it surfaces — Toast (pop-up) · Notify me (bell badge) · Quiet"
             color: root.dim1
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
@@ -1006,7 +1164,7 @@ PanelWindow {
             spacing: Style.space(10)
 
             Column {
-              width: (parent.width - Style.space(10)) / 2
+              width: (parent.width - Style.space(20)) / 3
               spacing: Style.space(6)
               Rectangle {
                 width: parent.width; height: Style.space(30); radius: Style.space(12)
@@ -1015,7 +1173,7 @@ PanelWindow {
                 border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.4)
                 Text {
                   anchors.left: parent.left; anchors.leftMargin: Style.space(10); anchors.verticalCenter: parent.verticalCenter
-                  text: "Notify me"
+                  text: "Toast"
                   color: root.accent
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.body
@@ -1026,22 +1184,43 @@ PanelWindow {
                 model: root.alertTypes
                 delegate: OMCPill {
                   width: parent.width
-                  active: (root.alertPrefs.types || {})[modelData] === true
+                  active: root.alertMode(modelData) === "toast"
                   label: modelData
-                  onChosen: {
-                    var types = {}; var src = root.alertPrefs.types || {}
-                    for (var k in src) types[k] = src[k]
-                    types[modelData] = true
-                    root.alertPrefs = ({ "enabled": root.alertPrefs.enabled, "types": types })
-                    root.setAlertPref(modelData, true)
-                    root.refreshSoon()
-                  }
+                  onChosen: root.setAlertMode(modelData, "toast")
                 }
               }
             }
 
             Column {
-              width: (parent.width - Style.space(10)) / 2
+              width: (parent.width - Style.space(20)) / 3
+              spacing: Style.space(6)
+              Rectangle {
+                width: parent.width; height: Style.space(30); radius: Style.space(12)
+                color: Qt.rgba(0.878, 0.627, 0.188, 0.10)
+                border.width: 1
+                border.color: Qt.rgba(0.878, 0.627, 0.188, 0.45)
+                Text {
+                  anchors.left: parent.left; anchors.leftMargin: Style.space(10); anchors.verticalCenter: parent.verticalCenter
+                  text: "Notify me"
+                  color: "#e0a030"
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                }
+              }
+              Repeater {
+                model: root.alertTypes
+                delegate: OMCPill {
+                  width: parent.width
+                  active: root.alertMode(modelData) === "notify"
+                  label: modelData
+                  onChosen: root.setAlertMode(modelData, "notify")
+                }
+              }
+            }
+
+            Column {
+              width: (parent.width - Style.space(20)) / 3
               spacing: Style.space(6)
               Rectangle {
                 width: parent.width; height: Style.space(30); radius: Style.space(12)
@@ -1050,7 +1229,7 @@ PanelWindow {
                 border.color: Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.25)
                 Text {
                   anchors.left: parent.left; anchors.leftMargin: Style.space(10); anchors.verticalCenter: parent.verticalCenter
-                  text: "No notifications"
+                  text: "No notification"
                   color: root.dim1
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.body
@@ -1061,16 +1240,9 @@ PanelWindow {
                 model: root.alertTypes
                 delegate: OMCPill {
                   width: parent.width
-                  active: !((root.alertPrefs.types || {})[modelData])
+                  active: root.alertMode(modelData) === "none"
                   label: modelData
-                  onChosen: {
-                    var types = {}; var src = root.alertPrefs.types || {}
-                    for (var k in src) types[k] = src[k]
-                    types[modelData] = false
-                    root.alertPrefs = ({ "enabled": root.alertPrefs.enabled, "types": types })
-                    root.setAlertPref(modelData, false)
-                    root.refreshSoon()
-                  }
+                  onChosen: root.setAlertMode(modelData, "none")
                 }
               }
             }
@@ -1164,7 +1336,7 @@ PanelWindow {
             anchors.topMargin: Style.space(4)
             anchors.left: parent.left
             anchors.right: parent.right
-            text: "Persistent history · unread in bold · action buttons stop apps right now"
+            text: "Persistent history · click any row for full details and actions"
             color: root.dim1
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
@@ -1188,15 +1360,9 @@ PanelWindow {
               onKill: function(name) { root.appAction("kill", name) }
               onDisable: function(name) { root.disableApp(name) }
               onEnable: function(name) { root.enableApp(name) }
-              onDetails: function(name) {
-                var src = root.sample.apps || []
-                for (var i = 0; i < src.length; i++) {
-                  if (src[i].name === name) { root.detailApp = src[i]; return }
-                }
-                var cat = root.sample.catalog || []
-                for (var j = 0; j < cat.length; j++) {
-                  if (cat[j].name === name) { root.detailApp = cat[j]; return }
-                }
+              onDetails: function(ev) {
+                root.eventDetail = ev
+                if (!ev.read) root.markEventRead(ev.id)
               }
             }
           }
@@ -1509,6 +1675,19 @@ PanelWindow {
     onNo: {}
   }
 
+  // ==================== Event details modal (one click from an Events row)
+  EventDetailPanel {
+    id: eventDetailPanel
+    visible: root.eventDetail != null
+    event: root.eventDetail
+    z: 63
+    anchors.fill: card
+    onClose: root.eventDetail = null
+    onKill: function(name) { root.appAction("kill", name); root.eventDetail = null }
+    onDisable: function(name) { root.disableApp(name); root.eventDetail = null }
+    onEnable: function(name) { root.enableApp(name); root.eventDetail = null }
+  }
+
   // Shared rounded-pill: used by the Activity MET selectors (label + optional
   // live value), the Apps filter row, the Alerts config chips and (via
   // RangePill) the history range selector — one shape everywhere.
@@ -1522,7 +1701,7 @@ PanelWindow {
     height: pill.value === "" ? Style.space(28) : Style.space(44)
     width: pill.value === ""
         ? Math.max(pillLabel.implicitWidth + Style.space(20), Style.space(40))
-        : Math.max(Style.space(104), Math.min(Style.space(170), pillValue.implicitWidth + Style.space(24)))
+        : Math.max(Style.space(116), Math.min(Style.space(170), pillValue.implicitWidth + Style.space(24)))
     color: pill.active ? root.accent : root.accentSoft
     Text {
       id: pillLabel
@@ -1536,7 +1715,7 @@ PanelWindow {
     Column {
       visible: pill.value !== ""
       anchors.centerIn: parent
-      spacing: -2
+      spacing: 1
       Text {
         anchors.horizontalCenter: parent.horizontalCenter
         text: pill.label
@@ -1996,7 +2175,7 @@ PanelWindow {
     signal kill(string name)
     signal disable(string name)
     signal enable(string name)
-    signal details(string name)
+    signal details(var event)
     readonly property bool unread: !(event.read)
     readonly property bool actionsOpen: evr.actionOpen
     readonly property bool hasApp: (event.app || "") !== ""
@@ -2012,16 +2191,8 @@ PanelWindow {
       if (k.indexOf("user_") === 0) return "Action"
       return (k || "Event").toUpperCase()
     }
-    readonly property string icon: {
-      var k = event.kind || ""
-      if (k === "app_launch" || k === "new_app") return "\uf00a"
-      if (k === "app_exit") return "\uf2d8"
-      if (k === "cpu_spike" || k === "mem_spike") return "\uf496"
-      if (k === "mic_access" || k === "cam_access" || k === "location_access") return "\uf124"
-      if (k === "publisher_block" || k === "unsigned_launch" || k === "unknown_app") return "\uf132"
-      if (k.indexOf("user_") === 0) return "\uf013"
-      return "\uf0c3"
-    }
+    readonly property color typed: root.eventTypeColor(event.kind || "")
+    readonly property string icon: root.eventIcon(event.kind || "")
     property bool actionOpen: false
     implicitHeight: (evr.actionOpen ? Style.space(52) : Style.space(30))
     width: parent ? parent.width : 0
@@ -2032,37 +2203,36 @@ PanelWindow {
       color: evr.unread ? root.accentSoft : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.05)
     }
     Rectangle {
-      visible: evr.unread
       anchors.left: parent.left
-      anchors.leftMargin: Style.space(10)
+      anchors.leftMargin: Style.space(6)
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(7)
-      height: Style.space(7)
-      radius: Style.space(4)
-      color: root.accent
+      width: Style.space(3)
+      height: Style.space(18)
+      radius: Style.space(2)
+      color: evr.typed
     }
     Text {
       anchors.left: parent.left
-      anchors.leftMargin: evr.unread ? Style.space(24) : Style.space(12)
+      anchors.leftMargin: Style.space(18)
       anchors.verticalCenter: parent.verticalCenter
       width: Style.space(20)
       text: evr.icon
-      color: evr.unread ? root.accent : root.dim1
+      color: evr.typed
       font.family: root.contentFontFamily
       font.pixelSize: Style.font.caption
     }
     Rectangle {
       anchors.left: parent.left
-      anchors.leftMargin: evr.unread ? Style.space(52) : Style.space(40)
+      anchors.leftMargin: Style.space(48)
       anchors.verticalCenter: parent.verticalCenter
       width: Style.space(56)
       height: Style.space(15)
       radius: Style.space(8)
-      color: Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.14)
+      color: Qt.rgba(evr.typed.r, evr.typed.g, evr.typed.b, 0.15)
       Text {
         anchors.centerIn: parent
         text: evr.kindLabel
-        color: root.dim1
+        color: evr.typed
         font.family: root.contentFontFamily
         font.pixelSize: Style.font.caption
         font.bold: true
@@ -2070,9 +2240,9 @@ PanelWindow {
     }
     Text {
       anchors.left: parent.left
-      anchors.leftMargin: evr.unread ? Style.space(116) : Style.space(104)
+      anchors.leftMargin: Style.space(112)
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(150)
+      anchors.rightMargin: Style.space(96)
       anchors.verticalCenter: parent.verticalCenter
       text: (hasApp ? (event.app + " — ") : "") + (event.msg || "")
       color: root.fg
@@ -2083,21 +2253,45 @@ PanelWindow {
     }
     Text {
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(12)
+      anchors.rightMargin: Style.space(44)
       anchors.verticalCenter: parent.verticalCenter
       text: root.fmtAgo(event.ts || 0)
       color: root.dim2
       font.family: root.contentFontFamily
       font.pixelSize: Style.font.caption
     }
+    Text {
+      id: evrChevron
+      z: 5
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(26)
+      horizontalAlignment: Text.AlignHCenter
+      text: evr.actionOpen ? "\uf077" : "\uf078"
+      color: root.dim2
+      font.family: root.contentFontFamily
+      font.pixelSize: Style.font.caption
+      MouseArea {
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: evr.actionOpen = !evr.actionOpen
+      }
+    }
     Row {
+      z: 4
       visible: evr.actionOpen
       anchors.top: parent.top
       anchors.topMargin: Style.space(28)
       anchors.left: parent.left
-      anchors.leftMargin: Style.space(104)
+      anchors.leftMargin: Style.space(112)
       spacing: Style.space(6)
       height: Style.space(20)
+      ActionChip {
+        label: "Details"
+        onChosen: evr.details(evr.event)
+      }
       ActionChip {
         visible: evr.unread
         label: "Mark read"
@@ -2119,17 +2313,193 @@ PanelWindow {
         label: "Enable"
         onChosen: evr.enable(evr.event.app)
       }
-      ActionChip {
-        visible: evr.hasApp
-        label: "Details"
-        onChosen: evr.details(evr.event.app)
-      }
     }
     MouseArea {
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
-      onClicked: evr.actionOpen = !evr.actionOpen
+      onClicked: evr.details(evr.event)
+    }
+  }
+
+  component EventDetailPanel: Item {
+    id: edp
+    property var event: ({})
+
+    // Guarded alias so the hidden panel (event === null) never hits null derefs.
+    readonly property var ev: edp.event || {}
+    signal close()
+    signal kill(string name)
+    signal disable(string name)
+    signal enable(string name)
+    readonly property color typed: root.eventTypeColor(edp.ev.kind || "")
+    readonly property bool hasApp: (edp.ev.app || "") !== ""
+    readonly property var snapProcs: root.topAt(edp.ev.ts || 0, 8)
+
+    Rectangle {
+      anchors.fill: parent
+      color: Qt.rgba(0, 0, 0, 0.35)
+      MouseArea {
+        anchors.fill: parent
+        cursorShape: Qt.PointingHandCursor
+        onClicked: edp.close()
+      }
+    }
+
+    Rectangle {
+      width: Math.min(parent.width * 0.5, Style.space(420))
+      height: Math.min(parent.height - Style.space(80),
+                       edpBody.implicitHeight + Style.space(40))
+      anchors.centerIn: parent
+      radius: Style.space(16)
+      color: root.surface
+      border.width: 1
+      border.color: root.surfaceBorder
+      clip: true
+      MouseArea { anchors.fill: parent }
+
+      Text {
+        anchors.top: parent.top
+        anchors.topMargin: Style.space(10)
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(14)
+        text: "\uf00d"
+        color: root.dim2
+        font.family: root.contentFontFamily
+        font.pixelSize: Style.font.body
+        MouseArea {
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: edp.close()
+        }
+      }
+
+      Column {
+        id: edpBody
+        anchors.fill: parent
+        anchors.margins: Style.space(20)
+        spacing: Style.space(10)
+
+        Row {
+          spacing: Style.space(8)
+          Rectangle {
+            width: Style.space(36)
+            height: Style.space(36)
+            radius: width / 2
+            color: edp.typed
+            Text {
+              anchors.centerIn: parent
+              text: root.eventIcon(edp.ev.kind || "")
+              color: "white"
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.body
+            }
+          }
+          Column {
+            anchors.verticalCenter: parent.verticalCenter
+            Text {
+              text: edp.ev.app || "System"
+              color: root.fg
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+            Text {
+              text: edp.ev.publisher || "Unknown"
+              color: root.dim1
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+        Text {
+          width: edpBody.width
+          text: root.eventKindLabel(edp.ev.kind || "")
+          color: edp.typed
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+        Text {
+          width: edpBody.width
+          text: edp.ev.msg || ""
+          wrapMode: Text.WordWrap
+          color: root.fg
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+        }
+        Text {
+          text: root.fmtFullDate(edp.ev.ts || 0)
+          color: root.dim2
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+        }
+        Text {
+          text: "PROCESSES AT " + root.fmtTime(edp.ev.ts || 0)
+          color: root.dim1
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+        Text {
+          visible: edp.snapProcs.length === 0
+          width: edpBody.width
+          text: "No minute snapshot captured for this exact moment"
+          color: root.dim2
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+        }
+        Repeater {
+          model: edp.snapProcs
+          delegate: Item {
+            id: evProc
+            readonly property bool isEvApp: (modelData.name || "").toLowerCase() === (edp.ev.app || "").toLowerCase()
+            width: edpBody.width - Style.space(2)
+            height: Style.space(19)
+            Text {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width * 0.55
+              text: (evProc.isEvApp ? "\u25c9 " : "") + (modelData.name || "unknown")
+              color: evProc.isEvApp ? root.accent : root.fg
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: evProc.isEvApp
+              elide: Text.ElideRight
+            }
+            Text {
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: Math.round(modelData.cpu || 0) + "% CPU"
+                  + (modelData.mem ? " · " + Math.round(modelData.mem) + " MB" : "")
+                  + (modelData.pid ? " · " + modelData.pid : "")
+              color: evProc.isEvApp ? root.accent : root.dim1
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+        Row {
+          spacing: Style.space(8)
+          ActionChip {
+            visible: edp.hasApp
+            label: "Kill"
+            danger: true
+            onChosen: edp.kill(edp.ev.app)
+          }
+          ActionChip {
+            visible: edp.hasApp && edp.ev.kind !== "user_disable"
+            label: "Disable"
+            onChosen: edp.disable(edp.ev.app)
+          }
+          ActionChip {
+            visible: edp.hasApp && edp.ev.kind === "user_disable"
+            label: "Enable"
+            onChosen: edp.enable(edp.ev.app)
+          }
+        }
+      }
     }
   }
 
@@ -2264,6 +2634,8 @@ PanelWindow {
     property bool statsBusy: false
     property var netInfo: null
     property bool netBusy: false
+    property bool procOpen: false
+    property bool procShowAll: false
     signal close()
     signal kill(string name)
     signal disable(string name)
@@ -2312,6 +2684,12 @@ PanelWindow {
       }
       return dp.netBusy ? "Scanning network sockets…" : ""
     }
+    function procShown() {
+      var arr = root.procDetail || []
+      if (!arr.length) return []
+      return arr.slice(0, dp.procShowAll ? arr.length : 6)
+    }
+    function procMore() { return Math.max(0, (root.procDetail || []).length - 6) }
     function statLegend() {
       if (!dp.stats) return []
       var s = dp.stats
@@ -2420,15 +2798,25 @@ PanelWindow {
       maximumLineCount: 2
       elide: Text.ElideRight
     }
-    Column {
-      id: dpInfo
+    Flickable {
+      id: dpScroll
       anchors.top: dpDesc.bottom
       anchors.topMargin: Style.space(10)
       anchors.left: parent.left
       anchors.leftMargin: Style.space(12)
       anchors.right: parent.right
       anchors.rightMargin: Style.space(12)
-      spacing: Style.space(8)
+      anchors.bottom: dpChips.top
+      anchors.bottomMargin: Style.space(8)
+      clip: true
+      contentWidth: width
+      contentHeight: dpInfo.implicitHeight
+      boundsBehavior: Flickable.StopAtBounds
+
+      Column {
+        id: dpInfo
+        width: dpScroll.width
+        spacing: Style.space(8)
 
       Text {
         width: parent.width
@@ -2504,6 +2892,176 @@ PanelWindow {
         elide: Text.ElideRight
       }
 
+      Column {
+        width: parent.width
+        visible: !!dp.app && (root.procDetail.length > 0 || root.procDetailBusy)
+        spacing: Style.space(4)
+
+        Rectangle {
+          id: procHeader
+          width: parent.width
+          height: Style.space(22)
+          radius: Style.space(11)
+          color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.10)
+          MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            preventStealing: true
+            onPressed: console.log("PROC HEADER PRESS")
+            onClicked: {
+              console.log("PROC HEADER CLICK pre=" + dp.procOpen + " n=" + root.procDetail.length)
+              dp.procOpen = !dp.procOpen
+              if (!dp.procOpen) dp.procShowAll = false
+              dpScroll.contentY = Math.max(0, procHeader.mapToItem(dpInfo, 0, 0).y - Style.space(4))
+            }
+            Text {
+              anchors.left: parent.left
+              anchors.leftMargin: Style.space(8)
+              anchors.verticalCenter: parent.verticalCenter
+              text: (dp.procOpen ? "\uf078  " : "\uf054  ")
+                  + "Running processes (" + root.procDetail.length + ")"
+              color: root.dim1
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+          }
+        }
+
+        Text {
+          visible: root.procDetailBusy && root.procDetail.length === 0
+          text: "Scanning live processes…"
+          color: root.dim2
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        Repeater {
+          visible: dp.procOpen
+          model: dp.procOpen ? dp.procShown() : []
+          delegate: Column {
+            width: dpInfo.width
+            spacing: Style.space(1)
+            Rectangle {
+              width: parent.width
+              height: Style.space(44)
+              radius: Style.space(10)
+              color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.08)
+              Row {
+                anchors.top: parent.top
+                anchors.topMargin: Style.space(5)
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(8)
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(8)
+                spacing: Style.space(6)
+                Text {
+                  text: "#" + modelData.pid
+                  color: root.fg
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+                Rectangle {
+                  width: Math.max(Style.space(46), stateChipText.implicitWidth + Style.space(12))
+                  height: Style.space(14)
+                  radius: Style.space(7)
+                  color: modelData.state === "Z"
+                      ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.12)
+                      : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
+                  Text {
+                    id: stateChipText
+                    anchors.centerIn: parent
+                    text: modelData.state_label
+                    color: modelData.state === "Z" ? root.urgent : root.dim1
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+                Text {
+                  text: modelData.user
+                  color: root.dim1
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                }
+                Text {
+                  visible: modelData.threads > 1
+                  text: "·  " + modelData.threads + " threads"
+                  color: root.dim2
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                }
+                Text {
+                  visible: modelData.rss_mb > 0
+                  text: "·  " + modelData.rss_mb + " MB"
+                  color: root.dim2
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                }
+                Text {
+                  visible: modelData.elapsed_s > 0
+                  text: "·  up " + root.fmtDur(modelData.elapsed_s)
+                  color: root.dim2
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                }
+                Text {
+                  visible: modelData.cpu_s > 0
+                  text: "·  " + (modelData.cpu_s >= 10 ? Math.round(modelData.cpu_s) : modelData.cpu_s) + "s cpu"
+                  color: root.dim2
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                }
+                Text {
+                  visible: modelData.unit !== ""
+                  text: "·  " + modelData.unit
+                  color: root.dim2
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  elide: Text.ElideRight
+                }
+              }
+              Text {
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(8)
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(8)
+                anchors.top: parent.top
+                anchors.topMargin: Style.space(22)
+                text: modelData.cmdline
+                color: root.dim2
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+            }
+          }
+        }
+
+        Rectangle {
+          width: parent.width
+          height: Style.space(22)
+          radius: Style.space(11)
+          visible: dp.procOpen && !dp.procShowAll && dp.procMore() > 0
+          color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.08)
+          MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            preventStealing: true
+            onClicked: dp.procShowAll = true
+            Text {
+              anchors.centerIn: parent
+              text: "+ " + dp.procMore() + " more instance(s)"
+              color: root.dim2
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+        }
+      }
+
       Text {
         width: parent.width
         text: "How to read the values"
@@ -2536,9 +3094,11 @@ PanelWindow {
         }
       }
     }
+  }
     Row {
-      anchors.top: dpInfo.bottom
-      anchors.topMargin: Style.space(16)
+      id: dpChips
+      anchors.bottom: parent.bottom
+      anchors.bottomMargin: Style.space(10)
       anchors.left: parent.left
       anchors.leftMargin: Style.space(12)
       spacing: Style.space(6)
@@ -2616,7 +3176,6 @@ PanelWindow {
     id: ch
     property string leftLabel: "PROCESS"
     property string midLabel: "TRUST"
-    property string rightLabel: "TREND     MEM     CPU"
     height: Style.space(16)
     width: parent ? parent.width : 0
 
@@ -2648,11 +3207,39 @@ PanelWindow {
       font.pixelSize: Style.font.caption
       font.bold: true
     }
+    // Right columns mirror ProcRow's fixed right-side geometry so the labels
+    // sit directly over the data they describe.
     Text {
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(10)
+      anchors.rightMargin: Style.space(8)
       anchors.verticalCenter: parent.verticalCenter
-      text: ch.rightLabel
+      width: Style.space(64)
+      horizontalAlignment: Text.AlignHCenter
+      text: "CPU"
+      color: root.dim2
+      font.family: root.contentFontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+    Text {
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(110)
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(44)
+      horizontalAlignment: Text.AlignHCenter
+      text: "MEM"
+      color: root.dim2
+      font.family: root.contentFontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+    Text {
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(230)
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(100)
+      horizontalAlignment: Text.AlignHCenter
+      text: "TREND"
       color: root.dim2
       font.family: root.contentFontFamily
       font.pixelSize: Style.font.caption
@@ -2789,16 +3376,16 @@ PanelWindow {
       }
     }
     Sparkline {
-      anchors.right: prMemBar.left
-      anchors.rightMargin: Style.space(8)
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(230)
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(46)
+      width: Style.space(100)
       height: Style.space(14)
       data: pr.sparks
     }
     Text {
-      anchors.right: prMemBar.left
-      anchors.rightMargin: Style.space(62)
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(164)
       anchors.verticalCenter: parent.verticalCenter
       text: Math.round(pr.mem) + "%"
       color: root.dim1
@@ -2807,10 +3394,10 @@ PanelWindow {
     }
     Rectangle {
       id: prMemBar
-      anchors.right: prCpu.left
-      anchors.rightMargin: Style.space(8)
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(110)
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(34)
+      width: Style.space(44)
       height: Style.space(6)
       radius: Style.space(3)
       color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.18)
@@ -2826,7 +3413,7 @@ PanelWindow {
     Rectangle {
       id: prCpu
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(10)
+      anchors.rightMargin: Style.space(8)
       anchors.verticalCenter: parent.verticalCenter
       width: Style.space(64)
       height: Style.space(16)
@@ -2896,11 +3483,12 @@ PanelWindow {
     function resetView() { viewStart = -1; viewEnd = -1; requestPaint() }
 
     function evColor(kind) {
-      if (kind === "app_launch" || kind === "new_app") return "#3cb371"
+      if (kind === "app_launch" || kind === "new_app") return Qt.rgba(0.24, 0.7, 0.44, 1)
       if (kind === "app_exit") return Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.85)
       if (kind.indexOf("spike") >= 0) return hg.dangerColor
       if (kind === "publisher_block" || kind === "unsigned_launch" || kind === "unknown_app"
-          || kind === "mic_access" || kind === "cam_access" || kind === "location_access") return hg.dangerColor
+          || kind === "suspicious_app") return hg.dangerColor
+      if (kind === "mic_access" || kind === "cam_access" || kind === "location_access") return hg.dangerColor
       if (kind.indexOf("user_") === 0) return hg.lineColor
       return Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.7)
     }
@@ -2917,6 +3505,12 @@ PanelWindow {
     }
     function domainStart() { return hg.zoomed ? hg.viewStart : hg.fullStart() }
     function domainEnd() { return hg.zoomed ? hg.viewEnd : hg.fullEnd() }
+
+    // Property-backed forms of domainStart()/domainEnd() so external bindings
+    // (e.g. the temperature strip) re-evaluate on zoom/pan instead of calling
+    // the functions (function calls aren't tracked by the binding engine).
+    readonly property real domStart: hg.zoomed ? hg.viewStart : hg.fullStart()
+    readonly property real domEnd: hg.zoomed ? hg.viewEnd : hg.fullEnd()
 
     function timeAtX(x) {
       var s = hg.domainStart(), e = hg.domainEnd()
@@ -2985,7 +3579,7 @@ PanelWindow {
         yMax = Math.max(10, mx * 1.15)
       }
 
-      ctx.strokeStyle = Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.18)
+      ctx.strokeStyle = Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.09)
       ctx.lineWidth = 1
       var steps = 4
       for (var gi = 0; gi <= steps; gi++) {
@@ -2997,8 +3591,8 @@ PanelWindow {
         ctx.stroke()
         ctx.fillStyle = root.dim2
         ctx.font = "9px " + root.contentFontFamily
-        ctx.textAlign = "left"
-        ctx.fillText("" + Math.round(gv), 2, gy - 2)
+        ctx.textAlign = "right"
+        ctx.fillText("" + Math.round(gv), w - rightPad - 2, gy - 2)
       }
 
       ctx.fillStyle = root.dim2
@@ -3017,7 +3611,27 @@ PanelWindow {
       if (hg.pts.length < 2) return
       var spanT = Math.max(1, hg.domainEnd() - hg.domainStart())
 
-      // Clean single-pixel-width line (no area fill, no halo) in accent color.
+      // Subtle gradient fill under the curve (own closed path, so the stroke
+      // below stays a crisp single line instead of a filled outline).
+      ctx.beginPath()
+      var fStarted = false
+      for (var fi = 0; fi < hg.pts.length; fi++) {
+        var fp = hg.pts[fi]
+        var fX = leftPad + (fp.ts - hg.domainStart()) / spanT * plotW
+        var fY = topPad + plotH - Math.max(0, Math.min(yMax, fp.v)) / yMax * plotH
+        if (!fStarted) { ctx.moveTo(fX, fY); fStarted = true }
+        else ctx.lineTo(fX, fY)
+      }
+      ctx.lineTo(leftPad + plotW, topPad + plotH)
+      ctx.lineTo(leftPad, topPad + plotH)
+      ctx.closePath()
+      var grad = ctx.createLinearGradient(0, topPad, 0, topPad + plotH)
+      grad.addColorStop(0, Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.18))
+      grad.addColorStop(1, Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.0))
+      ctx.fillStyle = grad
+      ctx.fill()
+
+      // Clean single-pixel-width line overlay in accent color.
       ctx.beginPath()
       var started = false
       for (var li = 0; li < hg.pts.length; li++) {
@@ -3054,31 +3668,46 @@ PanelWindow {
         if (hot) ctx.stroke()
       }
 
-      // Event markers: small filled circles hovering just above the line,
-      // colored by event kind (green for launches).
+      // Event pins: a diamond tab at the top edge with a faint vertical guide
+      // down to the curve — every logged event (incl. every toast) stays
+      // pinned on the chart at its timestamp.
       if (hg.events && hg.events.length) {
         var eST = hg.domainStart(), eET = hg.domainEnd()
-        for (var mi = 0; mi < hg.events.length; mi++) {
-          var ev = hg.events[mi]
-          if (ev.ts < eST || ev.ts > eET) continue
-          var mX = leftPad + (ev.ts - eST) / spanT * plotW
-          var vAt = -1
-          for (var bi = 0; bi < hg.pts.length; bi++) {
-            if (hg.pts[bi].ts <= ev.ts) vAt = hg.pts[bi].v
+        for (var pi = 0; pi < hg.events.length; pi++) {
+          var ev2 = hg.events[pi]
+          if (ev2.ts < eST || ev2.ts > eET) continue
+          var pinX = leftPad + (ev2.ts - eST) / spanT * plotW
+          var pinVal = -1
+          for (var bi2 = 0; bi2 < hg.pts.length; bi2++) {
+            if (hg.pts[bi2].ts <= ev2.ts) pinVal = hg.pts[bi2].v
             else {
-              if (bi > 0 && hg.pts[bi].ts !== hg.pts[bi - 1].ts) {
-                var f = (ev.ts - hg.pts[bi - 1].ts) / (hg.pts[bi].ts - hg.pts[bi - 1].ts)
-                vAt = hg.pts[bi - 1].v + f * (hg.pts[bi].v - hg.pts[bi - 1].v)
-              } else vAt = hg.pts[bi].v
+              if (bi2 > 0 && hg.pts[bi2].ts !== hg.pts[bi2 - 1].ts) {
+                var f2 = (ev2.ts - hg.pts[bi2 - 1].ts) / (hg.pts[bi2].ts - hg.pts[bi2 - 1].ts)
+                pinVal = hg.pts[bi2 - 1].v + f2 * (hg.pts[bi2].v - hg.pts[bi2 - 1].v)
+              } else pinVal = hg.pts[bi2].v
               break
             }
           }
-          if (vAt < 0) continue
-          var mY = topPad + plotH - Math.max(0, Math.min(yMax, vAt)) / yMax * plotH
-          var cY = Math.max(topPad + 2, mY - 7)
+          var pinCol = hg.evColor(ev2.kind || ev2.type || "")
+          // Faint vertical guide from the pin down to the interpolated curve
+          // value (or the plot floor if the event predates the data).
+          var pinBase = pinVal >= 0
+              ? topPad + plotH - Math.max(0, Math.min(yMax, pinVal)) / yMax * plotH
+              : topPad + plotH - 1
+          ctx.strokeStyle = Qt.rgba(pinCol.r, pinCol.g, pinCol.b, 0.22)
+          ctx.lineWidth = 1
           ctx.beginPath()
-          ctx.arc(mX, cY, 3.3, 0, Math.PI * 2)
-          ctx.fillStyle = hg.evColor(ev.kind || ev.type || "")
+          ctx.moveTo(pinX + 0.5, topPad + 11)
+          ctx.lineTo(pinX + 0.5, Math.max(topPad + 11, pinBase - 4))
+          ctx.stroke()
+          // Diamond pin head pinned to the top edge.
+          ctx.beginPath()
+          ctx.moveTo(pinX, topPad + 2)
+          ctx.lineTo(pinX + 4, topPad + 6)
+          ctx.lineTo(pinX, topPad + 10)
+          ctx.lineTo(pinX - 4, topPad + 6)
+          ctx.closePath()
+          ctx.fillStyle = pinCol
           ctx.fill()
         }
       }
@@ -3208,6 +3837,15 @@ PanelWindow {
           elide: Text.ElideRight
         }
         Text {
+          id: tipEvents
+          width: tip.width - Style.space(16)
+          color: Qt.rgba(0.72, 0.92, 1, 0.92)
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+          visible: false
+        }
+        Text {
           id: tipMore
           text: "  click for all processes"
           color: hg.lineColor
@@ -3236,6 +3874,23 @@ PanelWindow {
         for (var k = 0; k < top.length && top[k]; k++) {
           tipTop.text += (k > 0 ? " · " : "") + top[k].name + " " + Math.round(top[k].cpu) + "%"
         }
+        // Pinned events near this moment (the 3 closest within ±5 min).
+        var pins = []
+        for (var pi = 0; pi < hg.events.length; pi++) {
+          var pe = hg.events[pi]
+          var pd = Math.abs(pe.ts - near.ts)
+          if (pd > 300) continue
+          pins.push({ d: pd, e: pe })
+        }
+        pins.sort(function(a, b) { return a.d - b.d })
+        var ptxt = ""
+        for (var q = 0; q < pins.length && q < 3; q++) {
+          var pev = pins[q].e
+          ptxt += (q > 0 ? "\n" : "") + "◆ " + Qt.formatTime(new Date(pev.ts * 1000), "HH:mm")
+              + "  " + (pev.app || pev.msg || pev.kind)
+        }
+        tipEvents.text = ptxt
+        tipEvents.visible = ptxt.length > 0
         tip.visible = true
         tip.parent = hg
         tip.width = Style.space(220)
@@ -3338,6 +3993,56 @@ PanelWindow {
       target: mo.graph
       function onViewStartChanged() { moCan.requestPaint() }
       function onViewEndChanged() { moCan.requestPaint() }
+    }
+  }
+
+  // Thin CPU/GPU temperature readout that shares the main graph's time domain,
+  // so scrubbing/zooming the chart re-scopes it automatically via graph.domStart/domEnd.
+  component TemperatureStrip: Canvas {
+    id: ts
+    property var pts: []
+    property real domainStart: -1
+    property real domainEnd: -1
+    onPtsChanged: requestPaint()
+    onDomainStartChanged: requestPaint()
+    onDomainEndChanged: requestPaint()
+    onWidthChanged: requestPaint()
+
+    onPaint: {
+      var ctx = getContext("2d")
+      ctx.reset()
+      if (ts.pts.length < 2 || ts.domainEnd <= ts.domainStart) return
+      var leftPad = 8, rightPad = 8
+      var plotW = width - leftPad - rightPad
+      var minT = 1e9, maxT = -1e9
+      for (var i = 0; i < ts.pts.length; i++) {
+        minT = Math.min(minT, ts.pts[i].ctemp, ts.pts[i].gtemp)
+        maxT = Math.max(maxT, ts.pts[i].ctemp, ts.pts[i].gtemp)
+      }
+      if (maxT <= minT) { minT -= 1; maxT += 1 }
+      var spanT = ts.domainEnd - ts.domainStart
+
+      function drawLine(key, color) {
+        ctx.beginPath()
+        var started = false
+        for (var i = 0; i < ts.pts.length; i++) {
+          var p = ts.pts[i]
+          var x = leftPad + (p.ts - ts.domainStart) / spanT * plotW
+          var y = height - 2 - (p[key] - minT) / (maxT - minT) * (height - 4)
+          if (!started) { ctx.moveTo(x, y); started = true } else ctx.lineTo(x, y)
+        }
+        ctx.strokeStyle = color
+        ctx.lineWidth = 1.5
+        ctx.stroke()
+      }
+      drawLine("ctemp", root.accent)
+      drawLine("gtemp", Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.5))
+
+      ctx.fillStyle = root.dim2
+      ctx.font = "8px " + root.contentFontFamily
+      ctx.textAlign = "right"
+      ctx.fillText(Math.round(maxT) + "°C", width - rightPad, 8)
+      ctx.fillText(Math.round(minT) + "°C", width - rightPad, height - 2)
     }
   }
 }

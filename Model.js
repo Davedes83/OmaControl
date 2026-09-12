@@ -335,6 +335,32 @@ function parsePrivacy(text) {
   }
 }
 
+// ---- event kind styling (category color + glyph, shared by EventRow and
+// EventDetailPanel so the list and the detail view always agree)
+
+function eventTypeColor(kind) {
+  if (!kind) return "#94a3b8"
+  if (kind === "app_launch" || kind === "new_app") return "#22c55e" // green
+  if (kind === "app_exit") return "#94a3b8" // gray
+  if (kind === "cpu_spike" || kind === "mem_spike") return "#ef4444" // red
+  if (kind === "mic_access" || kind === "cam_access" || kind === "location_access") return "#3b82f6" // blue
+  if (kind === "publisher_block" || kind === "unsigned_launch" || kind === "unknown_app"
+      || kind === "suspicious_app") return "#f59e0b" // amber
+  if (kind.indexOf("user_") === 0) return "#8b5cf6" // purple
+  return "#94a3b8"
+}
+
+function eventIcon(kind) {
+  if (kind === "app_launch" || kind === "new_app") return "\uf00a"
+  if (kind === "app_exit") return "\uf2d8"
+  if (kind === "cpu_spike" || kind === "mem_spike") return "\uf496"
+  if (kind === "mic_access" || kind === "cam_access" || kind === "location_access") return "\uf124"
+  if (kind === "publisher_block" || kind === "unsigned_launch" || kind === "unknown_app"
+      || kind === "suspicious_app") return "\uf132"
+  if (kind.indexOf("user_") === 0) return "\uf013"
+  return "\uf0c3"
+}
+
 // ---- time formatting
 
 function fmtTimeAgo(ts) {

@@ -8,7 +8,13 @@ stdin:   lines of "PID NAME" for processes currently running
 Does:     INSERT OR IGNORE into app_meta(name, ...), refreshes unknown rows
           whose last retry is older than one day.
 """
-import os, re, sqlite3, subprocess, sys, time
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
 
 DB = os.environ.get("OMCONTROL_DB", os.path.expanduser("~/.local/share/omcontrol/history.db"))
 NOW = int(time.time())
@@ -54,6 +60,16 @@ def flatpak_info(appid):
     remote = sh(["flatpak", "info", "--show-remote", appid])
     return ("Flatpak", remote or "Unknown") if remote else ("Flatpak", "Unknown")
 
+def describe(name):
+    me = os.path.dirname(os.path.abspath(__file__))
+    out = sh(["sh", os.path.join(me, "process-info.sh"), name])
+    if not out:
+        return ""
+    try:
+        return json.loads(out).get("description", "")
+    except Exception:
+        return ""
+
 def resolve(name, pid):
     """Return (exe, pkg, publisher, desc, verified, source)."""
     exe = sh(["readlink", f"/proc/{pid}/exe"])
@@ -84,7 +100,10 @@ def resolve(name, pid):
         if not in_sync:
             verified = 0
         return (exe, pkg, publisher[:60], (desc.group(1).strip() if desc else "")[:120], 1 if verified else 0, "pacman")
-    return (exe, "", "Unknown", "", 0, "unknown")
+    # Last resort — the process-info dictionary (shells, launchers, convenience
+    # binaries that no single package cleanly owns).
+    desc = describe(name)
+    return (exe, "", "Unknown", desc, 0, "unknown")
 
 def main():
     con = sqlite3.connect(DB, timeout=8)

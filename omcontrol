@@ -13,7 +13,7 @@
 #   omcontrol events [--limit N]    recent persistent events
 #   omcontrol events read-all|clear
 #   omcontrol alert-prefs get        show current alert notification preferences
-#   omcontrol alert-prefs set <type> on|off   toggle a specific alert type
+#   omcontrol alert-prefs set <type> toast|notify|none   set an alert type's mode
 #   omcontrol alert-prefs set-enabled on|off  globally enable/disable alerts
 #
 # R accepts 5m/30m/1h/6h/24h/3d. M = cpu|mem|gpu|gtemp|ctemp. TS = epoch seconds.
@@ -179,16 +179,16 @@ do_procs_at() {
 do_alert_prefs() {
   local sub="${1:-get}" type="${2:-}" value="${3:-}"
   case "$sub" in
-    get) cat "${OMCONTROL_ALERT_PREFS:-$HOME/.local/share/omcontrol/alert_prefs.json}" ;;
+    get) "$SNIPS_DIR/backend/alert-prefs.sh" get ;;
     set)
-      [ -n "$type" ] && [ -n "$value" ] || { echo "usage: omcontrol alert-prefs set <type> on|off" >&2; exit 1; }
+      [ -n "$type" ] && [ -n "$value" ] || { echo "usage: omcontrol alert-prefs set <type> toast|notify|none" >&2; exit 1; }
       "$SNIPS_DIR/backend/alert-prefs.sh" set "$type" "$value"
       ;;
     set-enabled)
       [ -n "$type" ] || { echo "usage: omcontrol alert-prefs set-enabled on|off" >&2; exit 1; }
       "$SNIPS_DIR/backend/alert-prefs.sh" set-enabled "$type"
       ;;
-    *) echo "usage: omcontrol alert-prefs <get|set TYPE on|off|set-enabled on|off>" >&2; exit 1 ;;
+    *) echo "usage: omcontrol alert-prefs <get|set TYPE toast|notify|none|set-enabled on|off>" >&2; exit 1 ;;
   esac
 }
 

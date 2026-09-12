@@ -23,12 +23,8 @@ BarWidget {
   readonly property int gpuTemp: ready ? lastData.gpu_temp : 0
   readonly property bool alert: ready ? Model.hasAlert(lastData) || privacyAlert : false
 
-  // Dedupe: only toast a given new-app name once per shell session.
-  property var notifiedApps: ({})
-
-  // Alert preferences come from the widget's inline shell.json entry.
-  readonly property bool newAppAlerts: root.setting("newAppAlerts", true)
-  readonly property bool privacyAlerts: root.setting("privacyAlerts", true)
+  // Toasts for new apps / privacy access are the single choke point in
+  // backend/sql-ins.py (gated by alert_prefs.json modes). The bar only flags.
   readonly property string alertUrgency: root.setting("alertUrgency", "normal")
 
   readonly property string label: {
@@ -108,37 +104,6 @@ BarWidget {
     root.bar.run("omarchy-notification-send --app-name " + appName + " -u " + u + " " + headlineQ + bodyQ)
   }
 
-  function onNewApps(apps) {
-    if (!root.newAppAlerts || !apps || apps.length === 0) return
-    for (var i = 0; i < apps.length; i++) {
-      var name = apps[i].name
-      if (!name || root.notifiedApps[name]) continue
-      root.notifiedApps[name] = true
-      var body = "New application first seen running on this system"
-      root.notify("OmaControl — New app: " + name, body, "normal")
-    }
-  }
-
-  function onPrivacyChange(devices) {
-    if (!root.privacyAlerts) return
-    var prev = root.privacyDevices || []
-    var now = devices || []
-    // A device entry is "new" if its (pid, device) pair wasn't present before.
-    var prevKeys = {}
-    for (var i = 0; i < prev.length; i++) {
-      prevKeys[prev[i].device + "|" + prev[i].pid] = true
-    }
-    var notified = {}
-    for (var j = 0; j < now.length; j++) {
-      var key = now[j].device + "|" + now[j].pid
-      if (!prevKeys[key] && !notified[key]) {
-        notified[key] = true
-        var devName = now[j].device === "camera" ? "Camera" : (now[j].device === "location" ? "Location" : "Microphone")
-        root.notify("OmaControl — " + devName + " in use", now[j].name + " (PID " + now[j].pid + ")", "critical")
-      }
-    }
-  }
-
   Loader {
     id: appLoader
     active: true
@@ -198,6 +163,12 @@ BarWidget {
     function setAppTab(tab: int): void {
       if (appLoader.item) appLoader.item.activeTab = Number(tab)
     }
+    function toggleProcRows(): bool {
+      return appLoader.item ? appLoader.item.toggleProcRows() : false
+    }
+    function procRowsInfo(): string {
+      return appLoader.item ? appLoader.item.procRowsInfo() : "{}"
+    }
   }
 
   Process {
@@ -210,7 +181,6 @@ BarWidget {
         if (data) {
           root.lastData = data
           root.lastError = ""
-          root.onNewApps(data.new_apps || [])
           root.setPrivacyAlert()
         } else {
           root.lastError = "parse error"
@@ -295,10 +265,8 @@ BarWidget {
   }
 
   function setPrivacyAlertFrom(devices) {
-    var had = root.privacyAlert
     root.privacyAlert = devices && devices.length > 0
-    root.onPrivacyChange(devices)
-    root.privacyDevices = devices
+    root.privacyDevices = devices || []
   }
 
   Timer {

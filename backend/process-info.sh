@@ -48,6 +48,7 @@ case "$NAME" in
   btop|htop|top) DESC="System monitor — interactive real-time process and resource viewer." ;;
   git) DESC="Git — version control system for tracking code changes." ;;
   node|npm|npx) DESC="Node.js — JavaScript runtime for server-side and tooling." ;;
+  opencode) DESC="Opencode — AI coding assistant CLI running in the terminal." ;;
   python|python3) DESC="Python interpreter — runs Python scripts and packages." ;;
   rustc|cargo) DESC="Rust toolchain — compiler and package manager for Rust code." ;;
   docker|podman) DESC="Container runtime — runs isolated application containers." ;;

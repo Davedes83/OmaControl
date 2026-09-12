@@ -15,17 +15,21 @@ fi
 
 NOW=$(date +%s)
 
-LIVE=$(sqlite3 -cmd ".timeout 3000" "$DB" "SELECT cpu_pct, mem_used_mb, mem_total_mb, gpu_pct, proc_count, COALESCE(disk_pct,0) FROM metrics ORDER BY ts DESC LIMIT 1;" 2>/dev/null)
+LIVE=$(sqlite3 -cmd ".timeout 3000" "$DB" "SELECT cpu_pct, mem_used_mb, mem_total_mb, gpu_pct, proc_count, COALESCE(disk_pct,0), COALESCE(cpu_temp,0), COALESCE(gpu_temp,0) FROM metrics ORDER BY ts DESC LIMIT 1;" 2>/dev/null)
 CPU=${LIVE%%|*} REST=${LIVE#*|}
 MEM_USED=${REST%%|*} REST=${REST#*|}
 MEM_TOTAL=${REST%%|*} REST=${REST#*|}
 GPU=${REST%%|*} REST=${REST#*|}
 PROCS=${REST%%|*} REST=${REST#*|}
-DISK=$REST
+DISK=${REST%%|*} REST=${REST#*|}
+CTEMP=${REST%%|*} REST=${REST#*|}
+GTEMP=$REST
 [ -z "$CPU" ] && CPU=0
 [ -z "$MEM_TOTAL" ] || [ "$MEM_TOTAL" = 0 ] && MEM_TOTAL=1
 MEM=$((MEM_USED * 100 / MEM_TOTAL))
 [ -z "$DISK" ] && DISK=0
+[ -z "$CTEMP" ] && CTEMP=0
+[ -z "$GTEMP" ] && GTEMP=0
 
 # History rolls with disk + network included (net rates derived from
 # cumulative byte counters: delta bytes / delta seconds / 1024 = KB/s).
@@ -34,7 +38,7 @@ MEM=$((MEM_USED * 100 / MEM_TOTAL))
 # cached on disk; the cache is also the source between recomputes.
 ROLL_BASE="${DB}.rolls"
 ROLL_STAMP="$ROLL_BASE.stamp"
-ROLL_CACHE="$ROLL_BASE.v1"
+ROLL_CACHE="$ROLL_BASE.v2"
 ROLLS_LAST=0
 [ -f "$ROLL_STAMP" ] && ROLLS_LAST=$(cat "$ROLL_STAMP" 2>/dev/null || echo 0)
 ROLLS_AGE=$((NOW - ${ROLLS_LAST:-0}))
@@ -48,27 +52,30 @@ if [ "$ROLLS_AGE" -lt 30 ] && [ -f "$ROLL_CACHE" ]; then
   [ -z "$H1D" ] && H1D="[]"
 else
   ROLLS_OUT=$(sqlite3 -cmd ".timeout 3000" "$DB" <<SQL 2>/dev/null
-SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx)) || ']'
+SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx, 'ctemp', ctemp, 'gtemp', gtemp)) || ']'
 FROM (SELECT (ts/60)*60 as ts, avg(cpu_pct) as cpu,
              round(avg(mem_used_mb) * 100.0 / avg(mem_total_mb)) as mem,
              avg(gpu_pct) as gpu, round(avg(proc_count)) as procs,
              round(avg(disk_pct)) as disk,
+             avg(cpu_temp) as ctemp, avg(gpu_temp) as gtemp,
              round((max(net_rx_bytes) - min(net_rx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as rx,
              round((max(net_tx_bytes) - min(net_tx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as tx
       FROM metrics WHERE ts > $NOW - 3600 GROUP BY ts/60 ORDER BY ts);
-SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx)) || ']'
+SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx, 'ctemp', ctemp, 'gtemp', gtemp)) || ']'
 FROM (SELECT (ts/300)*300 as ts, avg(cpu_pct) as cpu,
              round(avg(mem_used_mb) * 100.0 / avg(mem_total_mb)) as mem,
              avg(gpu_pct) as gpu, round(avg(proc_count)) as procs,
              round(avg(disk_pct)) as disk,
+             avg(cpu_temp) as ctemp, avg(gpu_temp) as gtemp,
              round((max(net_rx_bytes) - min(net_rx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as rx,
              round((max(net_tx_bytes) - min(net_tx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as tx
       FROM metrics WHERE ts > $NOW - 21600 GROUP BY ts/300 ORDER BY ts);
-SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx)) || ']'
+SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx, 'ctemp', ctemp, 'gtemp', gtemp)) || ']'
 FROM (SELECT (ts/900)*900 as ts, avg(cpu_pct) as cpu,
              round(avg(mem_used_mb) * 100.0 / avg(mem_total_mb)) as mem,
              avg(gpu_pct) as gpu, round(avg(proc_count)) as procs,
              round(avg(disk_pct)) as disk,
+             avg(cpu_temp) as ctemp, avg(gpu_temp) as gtemp,
              round((max(net_rx_bytes) - min(net_rx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as rx,
              round((max(net_tx_bytes) - min(net_tx_bytes)) * 1000.0 / nullif(max(ts) - min(ts), 0) / 1024) as tx
       FROM metrics WHERE ts > $NOW - 86400 GROUP BY ts/900 ORDER BY ts);
@@ -125,7 +132,7 @@ else
 fi
 
 export OMC_DB="$DB" OMC_NOW="$NOW" OMC_DISABLED="$DISABLED" OMC_PREFS="$ALERT_PREFS"
-H1="$H1" H6="$H6" H1D="$H1D" CPU="$CPU" MEM="$MEM" GPU="$GPU" PROCS="$PROCS" DISK="$DISK" RX="$RX_KBS" TX="$TX_KBS" python3 - "$DB" <<'PY'
+H1="$H1" H6="$H6" H1D="$H1D" CPU="$CPU" MEM="$MEM" GPU="$GPU" PROCS="$PROCS" DISK="$DISK" RX="$RX_KBS" TX="$TX_KBS" CTEMP="$CTEMP" GTEMP="$GTEMP" python3 - "$DB" <<'PY'
 import json, os, sqlite3, sys, time
 from collections import defaultdict
 
@@ -204,7 +211,9 @@ for p in p_list0:
     pp["name"] = p.get("name") or "unknown"
     pp["publisher"] = m.get("publisher", "Unknown")
     pp["verified"] = m.get("verified", 0)
-    pp.update({"perms": perms.get(nm, []), "instances": counts[nm], "disabled": nm in disabled})
+    pp.update({"perms": perms.get(nm, []), "instances": counts[nm], "disabled": nm in disabled,
+               "source": m.get("source", "unknown"), "desc": m.get("desc", ""),
+               "exe": m.get("exe", ""), "pkg": m.get("pkg", "")})
     p_list.append(pp)
 
 # ---- apps: aggregate the latest snapshot by process name
@@ -321,6 +330,8 @@ print(json.dumps({
     "disk": int(float(os.environ.get("DISK", "0") or 0)),
     "net_rx_kbs": float(os.environ.get("RX", "0") or 0),
     "net_tx_kbs": float(os.environ.get("TX", "0") or 0),
+    "ctemp": float(os.environ.get("CTEMP", "0") or 0),
+    "gtemp": float(os.environ.get("GTEMP", "0") or 0),
     "history_1h": json.loads(os.environ.get("H1", "[]")),
     "history_6h": json.loads(os.environ.get("H6", "[]")),
     "history_1d": json.loads(os.environ.get("H1D", "[]")),

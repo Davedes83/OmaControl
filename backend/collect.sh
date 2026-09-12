@@ -13,33 +13,8 @@ NOW=$(date +%s)
 # Prune stale temp files from past invocations that got killed mid-run.
 find "$DATA_DIR" -maxdepth 1 -name '.omc_*' -mmin +30 -delete 2>/dev/null
 
-# --- Alert preferences (shared with the Alerts tab; imported by app-action.sh).
-#     Parsed once and cached; only re-parsed when alert_prefs.json changes,
-#     so this doesn't cost a python3 spawn on every 2s tick. ---
-ALERT_PREFS="${OMCONTROL_ALERT_PREFS:-$DATA_DIR/alert_prefs.json}"
-ALERT_CACHE="$DATA_DIR/.alert_prefs_cache"
-if [ -f "$ALERT_PREFS" ] && { [ ! -f "$ALERT_CACHE" ] || [ "$ALERT_PREFS" -nt "$ALERT_CACHE" ]; }; then
-  python3 - "$ALERT_PREFS" > "$ALERT_CACHE" <<'PY'
-import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-except Exception:
-    d = {}
-print("enabled=%d" % (1 if d.get("enabled", True) else 0))
-for k, v in (d.get("types") or {}).items():
-    if v:
-        print("type=%s" % k)
-PY
-fi
-ALERTS_ENABLED=1
-pref_enabled() {
-  grep -m1 '^enabled=' "$ALERT_CACHE" 2>/dev/null | cut -d= -f2
-}
-pref_on() {
-  [ -f "$ALERT_PREFS" ] || { echo 1; return; }
-  grep -Fqx "type=$1" "$ALERT_CACHE" 2>/dev/null && echo 1 || echo 0
-}
-[ -z "$ALERTS_ENABLED" ] && ALERTS_ENABLED=1
+# --- Toast notifications are fired from sql-ins.py (single choke point),
+#     which reads alert_prefs.json itself; nothing here needs the file. ---
 
 # --- One-time schema bootstrap. Marker file keeps this off the hot path:
 #     previously these CREATE/ALTER statements ran sqlite3 5x on every tick. ---
@@ -526,12 +501,39 @@ if [ -s "$DATA_DIR/.promote.$$" ]; then
   NEW_APPS="[$NEW_APPS]"
   while IFS= read -r nm; do
     nm=$(echo "$nm" | tr -d '\r')
+    [ -n "$nm" ] || continue
     echo "$NOW $nm" >> "$NEWAPPS_LOG"
-    printf 'event\t%s\tapp_launch\t%s\t\tApp started: %s\t0\n' "$NOW" "$nm" "$nm"
-    if [ "$ALERTS_ENABLED" = "1" ] && [ "$(pref_on 'New App Launch')" = "1" ]; then
-      notify-send -a OmaControl "New app launched" "$nm" 2>/dev/null
-    fi
-  done < "$DATA_DIR/.promote.$$" | OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" 2>/dev/null
+  done < "$DATA_DIR/.promote.$$"
+
+  # Classify each first-seen launch via the app-meta cache: verified apps are
+  # plain launches, known-but-unverified are unsigned_launch, anything without
+  # a resolved publisher is an unknown_app — the Security bucket / chart pins.
+  OMCONTROL_NOW="$NOW" python3 - "$DB" "$DATA_DIR/.promote.$$" <<'PY' | \
+      OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" 2>/dev/null
+import os, sqlite3, sys
+db = sys.argv[1]
+now = int(os.environ.get("OMCONTROL_NOW") or 0)
+names = []
+for ln in open(sys.argv[2], encoding="utf-8", errors="replace"):
+    nm = ln.rstrip("\n\r")
+    if nm.strip():
+        names.append(nm)
+if not names:
+    sys.exit()
+con = sqlite3.connect(db, timeout=3)
+try:
+    for nm in names:
+        row = con.execute("SELECT publisher, verified FROM app_meta WHERE name=?", (nm,)).fetchone()
+        if row is None or row[0] in ("", "Unknown"):
+            typ, known = "unknown_app", "0"
+        elif int(row[1] or 0):
+            typ, known = "app_launch", "1"
+        else:
+            typ, known = "unsigned_launch", "1"
+        print("event\t%s\t%s\t%s\t\tApp started: %s\t%s" % (now, typ, nm, nm, known))
+finally:
+    con.close()
+PY
   cat "$DATA_DIR/.promote.$$" >> "$SEEN_FILE"
 fi
 
