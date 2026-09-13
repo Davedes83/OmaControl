@@ -9,25 +9,29 @@ DB="${OMCONTROL_DB:-$DATA_DIR/history.db}"
 RULES="${OMCONTROL_RULES:-$DATA_DIR/rules.json}"
 
 if [ ! -f "$DB" ]; then
-  echo '{"cpu":0,"mem":0,"gpu":0,"procs":0,"disk":0,"history":[],"p_list":[],"snaps":[],"apps":[],"catalog":[],"alerts":[],"events":[],"alert_prefs":{},"disabled":[],"perms":{}}'
+  echo '{"cpu":0,"mem":0,"gpu":0,"procs":0,"disk":0,"disk_r":0,"disk_w":0,"history":[],"p_list":[],"snaps":[],"apps":[],"catalog":[],"alerts":[],"events":[],"alert_prefs":{},"disabled":[],"perms":{}}'
   exit 0
 fi
 
 NOW=$(date +%s)
 
-LIVE=$(sqlite3 -cmd ".timeout 3000" "$DB" "SELECT cpu_pct, mem_used_mb, mem_total_mb, gpu_pct, proc_count, COALESCE(disk_pct,0), COALESCE(cpu_temp,0), COALESCE(gpu_temp,0) FROM metrics ORDER BY ts DESC LIMIT 1;" 2>/dev/null)
+LIVE=$(sqlite3 -cmd ".timeout 3000" "$DB" "SELECT cpu_pct, mem_used_mb, mem_total_mb, gpu_pct, proc_count, COALESCE(disk_io,disk_pct,0), COALESCE(disk_r,0), COALESCE(disk_w,0), COALESCE(cpu_temp,0), COALESCE(gpu_temp,0) FROM metrics ORDER BY ts DESC LIMIT 1;" 2>/dev/null)
 CPU=${LIVE%%|*} REST=${LIVE#*|}
 MEM_USED=${REST%%|*} REST=${REST#*|}
 MEM_TOTAL=${REST%%|*} REST=${REST#*|}
 GPU=${REST%%|*} REST=${REST#*|}
 PROCS=${REST%%|*} REST=${REST#*|}
 DISK=${REST%%|*} REST=${REST#*|}
+DISK_R=${REST%%|*} REST=${REST#*|}
+DISK_W=${REST%%|*} REST=${REST#*|}
 CTEMP=${REST%%|*} REST=${REST#*|}
 GTEMP=$REST
 [ -z "$CPU" ] && CPU=0
 [ -z "$MEM_TOTAL" ] || [ "$MEM_TOTAL" = 0 ] && MEM_TOTAL=1
 MEM=$((MEM_USED * 100 / MEM_TOTAL))
 [ -z "$DISK" ] && DISK=0
+[ -z "$DISK_R" ] && DISK_R=0
+[ -z "$DISK_W" ] && DISK_W=0
 [ -z "$CTEMP" ] && CTEMP=0
 [ -z "$GTEMP" ] && GTEMP=0
 
@@ -38,7 +42,7 @@ MEM=$((MEM_USED * 100 / MEM_TOTAL))
 # cached on disk; the cache is also the source between recomputes.
 ROLL_BASE="${DB}.rolls"
 ROLL_STAMP="$ROLL_BASE.stamp"
-ROLL_CACHE="$ROLL_BASE.v3"
+ROLL_CACHE="$ROLL_BASE.v4"
 ROLLS_LAST=0
 [ -f "$ROLL_STAMP" ] && ROLLS_LAST=$(cat "$ROLL_STAMP" 2>/dev/null || echo 0)
 ROLLS_AGE=$((NOW - ${ROLLS_LAST:-0}))
@@ -56,7 +60,7 @@ SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gp
 FROM (SELECT (ts/10)*10 as ts, avg(cpu_pct) as cpu,
              round(avg(mem_used_mb) * 100.0 / avg(mem_total_mb)) as mem,
              avg(gpu_pct) as gpu, round(avg(proc_count)) as procs,
-             round(avg(disk_pct)) as disk,
+             round(avg(disk_io)) as disk,
              avg(cpu_temp) as ctemp, avg(gpu_temp) as gtemp,
              (max(net_rx_bytes) - min(net_rx_bytes)) / nullif(max(ts) - min(ts), 0) / 1024 as rx,
              (max(net_tx_bytes) - min(net_tx_bytes)) / nullif(max(ts) - min(ts), 0) / 1024 as tx
@@ -65,7 +69,7 @@ SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gp
 FROM (SELECT (ts/300)*300 as ts, avg(cpu_pct) as cpu,
              round(avg(mem_used_mb) * 100.0 / avg(mem_total_mb)) as mem,
              avg(gpu_pct) as gpu, round(avg(proc_count)) as procs,
-             round(avg(disk_pct)) as disk,
+             round(avg(disk_io)) as disk,
              avg(cpu_temp) as ctemp, avg(gpu_temp) as gtemp,
              round((max(net_rx_bytes) - min(net_rx_bytes)) / nullif(max(ts) - min(ts), 0) / 1024) as rx,
              round((max(net_tx_bytes) - min(net_tx_bytes)) / nullif(max(ts) - min(ts), 0) / 1024) as tx
@@ -74,7 +78,7 @@ SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gp
 FROM (SELECT (ts/900)*900 as ts, avg(cpu_pct) as cpu,
              round(avg(mem_used_mb) * 100.0 / avg(mem_total_mb)) as mem,
              avg(gpu_pct) as gpu, round(avg(proc_count)) as procs,
-             round(avg(disk_pct)) as disk,
+             round(avg(disk_io)) as disk,
              avg(cpu_temp) as ctemp, avg(gpu_temp) as gtemp,
              round((max(net_rx_bytes) - min(net_rx_bytes)) / nullif(max(ts) - min(ts), 0) / 1024) as rx,
              round((max(net_tx_bytes) - min(net_tx_bytes)) / nullif(max(ts) - min(ts), 0) / 1024) as tx
@@ -132,7 +136,7 @@ else
 fi
 
 export OMC_DB="$DB" OMC_NOW="$NOW" OMC_DISABLED="$DISABLED" OMC_PREFS="$ALERT_PREFS"
-H1="$H1" H6="$H6" H1D="$H1D" CPU="$CPU" MEM="$MEM" GPU="$GPU" PROCS="$PROCS" DISK="$DISK" RX="$RX_KBS" TX="$TX_KBS" CTEMP="$CTEMP" GTEMP="$GTEMP" python3 - "$DB" <<'PY'
+H1="$H1" H6="$H6" H1D="$H1D" CPU="$CPU" MEM="$MEM" GPU="$GPU" PROCS="$PROCS" DISK="$DISK" DISK_R="$DISK_R" DISK_W="$DISK_W" RX="$RX_KBS" TX="$TX_KBS" CTEMP="$CTEMP" GTEMP="$GTEMP" python3 - "$DB" <<'PY'
 import json, os, sqlite3, sys, time
 from collections import defaultdict
 
@@ -331,6 +335,8 @@ print(json.dumps({
     "gpu": float(os.environ.get("GPU", "0") or 0),
     "procs": int(os.environ.get("PROCS", "0") or 0),
     "disk": int(float(os.environ.get("DISK", "0") or 0)),
+    "disk_r": int(float(os.environ.get("DISK_R", "0") or 0)),
+    "disk_w": int(float(os.environ.get("DISK_W", "0") or 0)),
     "net_rx_kbs": float(os.environ.get("RX", "0") or 0),
     "net_tx_kbs": float(os.environ.get("TX", "0") or 0),
     "ctemp": float(os.environ.get("CTEMP", "0") or 0),

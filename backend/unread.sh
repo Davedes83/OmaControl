@@ -4,8 +4,11 @@
 DATA_DIR="${OMCONTROL_DATA_DIR:-$HOME/.local/share/omcontrol}"
 DB="${OMCONTROL_DB:-$DATA_DIR/history.db}"
 PREFS="${OMCONTROL_ALERT_PREFS:-$DATA_DIR/alert_prefs.json}"
-python3 - "$DB" "$PREFS" <<'PY'
-import json, sqlite3, sys
+BACKEND="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+OMC_BACKEND="$BACKEND" python3 - "$DB" "$PREFS" <<'PY'
+import json, os, sqlite3, sys
+sys.path.insert(0, os.environ["OMC_BACKEND"])
+from omc_prefs import DEVICE_TO_SENS, KIND_TO_SENS
 db, prefs_path = sys.argv[1], sys.argv[2]
 try:
     prefs = json.load(open(prefs_path))
@@ -15,18 +18,8 @@ if prefs.get("enabled") is False:
     print(json.dumps({"count": 0, "color": "dim"}))
     raise SystemExit
 types = prefs.get("types", {})
-# DB "type" → alert sensitivity label (mirrors sensitivityForKind in AppWindow).
-SENS = {
-    "app_launch": "New App Launch",
-    "app_exit": "App Exit",
-    "mic_access": "Mic or Cam Access", "cam_access": "Mic or Cam Access", "permission": "Mic or Cam Access",
-    "location_access": "Location Tracking",
-    "unsigned_launch": "Unsigned App Launch", "unknown_app": "Unsigned App Launch", "publisher_block": "Unsigned App Launch",
-    "suspicious_app": "New Suspicious App",
-    "service_change": "Service Change",
-    "service_launch": "New Service Launch",
-    "app_update": "App Update",
-}
+# DB "type"/"device" -> alert sensitivity label is shared via omc_prefs
+# (same table sql-ins.py uses for toast gating).
 # Map sensitivity label → chart color token (matches HistoryGraph.evColor).
 COLORS = {
     "App Exit": "dim",
@@ -40,7 +33,7 @@ PRIORITY = ["danger", "green", "accent", "dim"]
 
 
 def sensitivity(typ):
-    return SENS.get(typ, None)
+    return KIND_TO_SENS.get(typ)
 
 try:
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -68,8 +61,7 @@ try:
     for action, device, c in con.execute(
             "SELECT action, device, COUNT(*) FROM privacy_events"
             " WHERE action='start' AND ts > ? GROUP BY action, device", (lastread,)):
-        sens = {"camera": "Mic or Cam Access", "microphone": "Mic or Cam Access",
-                "location": "Location Tracking"}.get(device)
+        sens = DEVICE_TO_SENS.get(device)
         add(sens, c, "danger")
     print(json.dumps({"count": total, "color": top}))
 except Exception:

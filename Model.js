@@ -112,26 +112,31 @@ function batteryPct(data) {
 // The value functions return "--" when the stat isn't meaningful, which the
 // label builder drops so only live values are shown.
 
+// ---- bar-stats catalog: every readable stat that can be shown in the bar
+// icon label. Each entry returns a short one-token string for the label.
+// The value functions return "--" when the stat isn't meaningful, which the
+// label builder drops so only live values are shown.
+
 function barStatsCatalog() {
   return [
-    { id: "cpu",      label: "CPU",       glyph: "\u{F0912}", value: function(d) { return fmtPctShort(d ? d.cpu_pct : -1) } },
-    { id: "cputemp",  label: "CPU temp",  glyph: "\u{F0FC0}", value: function(d) { return fmtTempShort(d ? d.cpu_temp : 0) } },
-    { id: "cpufreq",  label: "CPU freq",  glyph: "\u{F0952}", value: function(d) { return fmtFreqShort(d ? d.cpu_hz_mhz : 0) } },
-    { id: "gpu",      label: "GPU",       glyph: "\u{F03D9}", value: function(d) { return fmtPctShort(d ? d.gpu_pct : -1) } },
-    { id: "gputemp",  label: "GPU temp",  glyph: "\u{F0598}", value: function(d) { return fmtTempShort(d ? d.gpu_temp : 0) } },
-    { id: "gpuclock", label: "GPU clock", glyph: "\u{F0E5E}", value: function(d) { return fmtFreqShort(d ? d.gpu_clock_mhz : 0) } },
-    { id: "gpuram",   label: "GPU mem",   glyph: "\u{F0EDF}", value: function(d) { return fmtMemShort(d ? d.gpu_mem_mb : 0) } },
-    { id: "gpupwr",   label: "GPU power", glyph: "\u{F0672}", value: function(d) { return isFinite(d && d.gpu_power_w) && d.gpu_power_w > 0 ? d.gpu_power_w.toFixed(0) + "W" : "--" } },
-    { id: "ram",      label: "RAM",       glyph: "\u{F17C3}", value: function(d) { return fmtMemShort(d ? d.mem_used_mb : 0) } },
-    { id: "rampct",   label: "RAM %",     glyph: "\u{F06B3}", value: function(d) { return d && d.mem_total_mb > 0 ? fmtPctShort(d.mem_used_mb / d.mem_total_mb * 100) : "--" } },
-    { id: "swap",     label: "Swap",      glyph: "\u{F0675}", value: function(d) { return fmtMemShort(d ? d.swap_used_mb : 0) } },
-    { id: "load",     label: "Load",      glyph: "\u{F0204}", value: function(d) { return d ? d.load_1.toFixed(1) : "--" } },
-    { id: "dpct",     label: "Disk %",    glyph: "\u{F02DC}", value: function(d) { return fmtPctShort(topDiskPct(d)) } },
-    { id: "down",     label: "Net ↓",     glyph: "\u{F01DA}", value: function(d) { var r = fmtRateShort(netSumKbs(d, "rx_kbs")); return r === "-" ? "0" : r } },
-    { id: "up",       label: "Net ↑",     glyph: "\u{F01D5}", value: function(d) { var r = fmtRateShort(netSumKbs(d, "tx_kbs")); return r === "-" ? "0" : r } },
-    { id: "procs",    label: "Processes", glyph: "\u{F035D}", value: function(d) { return d ? String(d.proc_count) : "--" } },
-    { id: "uptime",   label: "Uptime",    glyph: "\u{F01F0}", value: function(d) { return d ? fmtUptime(d.uptime_s) : "--" } },
-    { id: "batt",     label: "Battery",   glyph: "\u{F0075}", value: function(d) { return batteryPct(d) > 0 ? batteryPct(d) + "%" : "--" } }
+    { id: "cpu",      label: "CPU",       value: function(d) { return fmtPctShort(d ? d.cpu_pct : -1) } },
+    { id: "cputemp",  label: "CPU temp",  value: function(d) { return fmtTempShort(d ? d.cpu_temp : 0) } },
+    { id: "cpufreq",  label: "CPU freq",  value: function(d) { return fmtFreqShort(d ? d.cpu_hz_mhz : 0) } },
+    { id: "gpu",      label: "GPU",       value: function(d) { return fmtPctShort(d ? d.gpu_pct : -1) } },
+    { id: "gputemp",  label: "GPU temp",  value: function(d) { return fmtTempShort(d ? d.gpu_temp : 0) } },
+    { id: "gpuclock", label: "GPU clock", value: function(d) { return fmtFreqShort(d ? d.gpu_clock_mhz : 0) } },
+    { id: "gpuram",   label: "GPU mem",   value: function(d) { return fmtMemShort(d ? d.gpu_mem_mb : 0) } },
+    { id: "gpupwr",   label: "GPU power", value: function(d) { return isFinite(d && d.gpu_power_w) && d.gpu_power_w > 0 ? d.gpu_power_w.toFixed(0) + "W" : "--" } },
+    { id: "ram",      label: "RAM",       value: function(d) { return fmtMemShort(d ? d.mem_used_mb : 0) } },
+    { id: "rampct",   label: "RAM %",     value: function(d) { return d && d.mem_total_mb > 0 ? fmtPctShort(d.mem_used_mb / d.mem_total_mb * 100) : "--" } },
+    { id: "swap",     label: "Swap",      value: function(d) { return fmtMemShort(d ? d.swap_used_mb : 0) } },
+    { id: "load",     label: "Load",      value: function(d) { return d ? d.load_1.toFixed(1) : "--" } },
+    { id: "dpct",     label: "Disk %",    value: function(d) { return fmtPctShort(topDiskPct(d)) } },
+    { id: "down",     label: "Net ↓",     value: function(d) { var r = fmtRateShort(netSumKbs(d, "rx_kbs")); return r === "-" ? "0" : r } },
+    { id: "up",       label: "Net ↑",     value: function(d) { var r = fmtRateShort(netSumKbs(d, "tx_kbs")); return r === "-" ? "0" : r } },
+    { id: "procs",    label: "Processes", value: function(d) { return d ? String(d.proc_count) : "--" } },
+    { id: "uptime",   label: "Uptime",    value: function(d) { return d ? fmtUptime(d.uptime_s) : "--" } },
+    { id: "batt",     label: "Battery",   value: function(d) { return batteryPct(d) > 0 ? batteryPct(d) + "%" : "--" } }
   ]
 }
 
@@ -150,11 +155,6 @@ function barStatValue(data, id) {
   if (!entry || !data) return ""
   var v = entry.value(data)
   return v && v !== "--" && v !== "-" ? v : ""
-}
-
-function barStatGlyph(id) {
-  var entry = barStatById(id)
-  return entry ? entry.glyph : ""
 }
 
 function barStatLabel(id) {

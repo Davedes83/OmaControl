@@ -19,9 +19,13 @@ find "$DATA_DIR" -maxdepth 1 -mmin +30 \
 #     which reads alert_prefs.json itself; nothing here needs the file. ---
 
 # --- One-time schema bootstrap. Marker file keeps this off the hot path:
-#     previously these CREATE/ALTER statements ran sqlite3 5x on every tick. ---
-SCHEMA_MARK="${DB}.schema_mark_v3"
-if [ ! -f "$SCHEMA_MARK" ]; then
+#     previously these CREATE/ALTER statements ran sqlite3 5x on every tick.
+#     The column check is a self-heal: if a migration was interrupted by a
+#     transient lock (mark set but columns missing), it re-runs instead of
+#     leaving the INSERT/roll queries broken. ---
+SCHEMA_MARK="${DB}.schema_mark_v4"
+HAS_DISK_COLS=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM pragma_table_info('metrics') WHERE name IN ('disk_io','disk_r','disk_w');" 2>/dev/null)
+if [ ! -f "$SCHEMA_MARK" ] || [ "$HAS_DISK_COLS" != "3" ]; then
   sqlite3 -cmd ".timeout 1500" "$DB" <<'SQL' 2>/dev/null
 CREATE TABLE IF NOT EXISTS metrics (
   ts INTEGER PRIMARY KEY,
@@ -34,6 +38,9 @@ CREATE TABLE IF NOT EXISTS metrics (
   cpu_temp INTEGER,
   proc_count INTEGER,
   disk_pct REAL,
+  disk_io REAL,
+  disk_r REAL,
+  disk_w REAL,
   net_rx_bytes INTEGER,
   net_tx_bytes INTEGER
 );
@@ -56,9 +63,16 @@ CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 SQL
   # Legacy DBs predate the disk/net columns; add them if missing.
   sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_pct REAL;" 2>/dev/null || true
+  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_io REAL;" 2>/dev/null || true
+  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_r REAL;" 2>/dev/null || true
+  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_w REAL;" 2>/dev/null || true
   sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_rx_bytes INTEGER;" 2>/dev/null || true
   sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_tx_bytes INTEGER;" 2>/dev/null || true
-  touch "$SCHEMA_MARK"
+  # Only mark the migration complete once the columns actually exist, so a
+  # failed/healed-already DB keeps retrying instead of wedging permanently.
+  if [ "$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM pragma_table_info('metrics') WHERE name IN ('disk_io','disk_r','disk_w');" 2>/dev/null)" = "3" ]; then
+    touch "$SCHEMA_MARK"
+  fi
 fi
 
 D="$DATA_DIR"
@@ -66,15 +80,15 @@ CPU_PRE="$D/.omc_cpu_pre.$$"
 CPU_POST="$D/.omc_cpu_post.$$"
 DS_PRE="$D/.omc_disk_pre.$$"
 DS_POST="$D/.omc_disk_post.$$"
-NET_PRE="$D/.omc_net_pre.$$"
-NET_POST="$D/.omc_net_post.$$"
+NET_CUR="$D/.omc_net_cur.$$"
+NET_STATE_NEW="$D/.omc_net_state.new.$$"
 DISKIO="$D/.omc_diskio.$$"
 DF_FILE="$D/.omc_df.$$"
 PS_FILE="$D/.omc_ps.$$"
 PROC_IO_PRE="$D/.omc_proc_io_pre.$$"
 PROC_IO_POST="$D/.omc_proc_io_post.$$"
 PROC_SWAP="$D/.omc_proc_swap.$$"
-TMPFILES="$CPU_PRE $CPU_POST $DS_PRE $DS_POST $NET_PRE $NET_POST $DISKIO $DF_FILE $PS_FILE $PROC_IO_PRE $PROC_IO_POST $PROC_SWAP $DATA_DIR/.cur_names.$$ $DATA_DIR/.new_names.$$ $DATA_DIR/.promote.$$ $DATA_DIR/.fresh.$$ $DATA_DIR/.seen.$$"
+TMPFILES="$CPU_PRE $CPU_POST $DS_PRE $DS_POST $NET_CUR $NET_STATE_NEW $DISKIO $DF_FILE $PS_FILE $PROC_IO_PRE $PROC_IO_POST $PROC_SWAP $DATA_DIR/.cur_names.$$ $DATA_DIR/.new_names.$$ $DATA_DIR/.promote.$$ $DATA_DIR/.fresh.$$ $DATA_DIR/.seen.$$"
 trap 'rm -f $TMPFILES' EXIT INT TERM
 
 # --- Top 20 processes by CPU (snapshot once; used for per-proc IO + swap) ---
@@ -100,18 +114,17 @@ awk "$PROC_IO_AWK" "$PS_FILE" > "$PROC_IO_PRE"
 # --- Swap per process (VmSwap in kB) ---
 awk '{ f="/proc/"$1"/status"; s=0; while ((getline l < f) > 0) { if (l ~ /^VmSwap:/) { match(l, /^VmSwap: *[0-9]+/); s=substr(l,RLENGTH)+0; break } } close(f); print $1, s }' "$PS_FILE" > "$PROC_SWAP"
 
-# --- Sample capture (one 0.2s window for all deltas) ---
+# --- Sample capture (one 0.2s window for CPU/disk/proc-IO deltas; the
+#     network rate is a tick-to-tick delta computed later, not this window) ---
 awk '/^cpu /{print "cpu", $5+$6, $2+$3+$4+$5+$6+$7+$8; next}
      /^cpu[0-9]+ /{sub("cpu","",$1); print $1, $5+$6, $2+$3+$4+$5+$6+$7+$8}' /proc/stat > "$CPU_PRE"
 awk '{print $3, $6, $10}' /proc/diskstats > "$DS_PRE"
-awk 'NR>2{sub(":","",$1); print $1, $2, $10}' /proc/net/dev > "$NET_PRE"
 
 sleep 0.2
 
 awk '/^cpu /{print "cpu", $5+$6, $2+$3+$4+$5+$6+$7+$8; next}
      /^cpu[0-9]+ /{sub("cpu","",$1); print $1, $5+$6, $2+$3+$4+$5+$6+$7+$8}' /proc/stat > "$CPU_POST"
 awk '{print $3, $6, $10}' /proc/diskstats > "$DS_POST"
-awk 'NR>2{sub(":","",$1); print $1, $2, $10}' /proc/net/dev > "$NET_POST"
 
 # --- Per-process I/O post (accumulated) ---
 awk "$PROC_IO_AWK" "$PS_FILE" > "$PROC_IO_POST"
@@ -199,10 +212,23 @@ awk 'NR==FNR { r[$1]=$2; w[$1]=$3; next }
 df -P > "$DF_FILE" 2>/dev/null
 DISKS=""
 DISK_MAX_PCT=0
+DF_DEVS=""
 while read -r fs blk used avail pct mount; do
   [ "$fs" = "Filesystem" ] && continue
+  # /dev/path → /proc/diskstats device name. LUKS/dm mounts show up as
+  # /dev/mapper/<name> in df but dm-N in diskstats, so resolve via sysfs.
   case "$fs" in
-    /dev/*) ;;
+    /dev/mapper/*)
+      dev=""
+      for dmn_dev in /sys/class/block/dm-*/dm/name; do
+        [ -r "$dmn_dev" ] || continue
+        [ "$(cat "$dmn_dev" 2>/dev/null)" = "${fs#/dev/mapper/}" ] && { dev=$(basename "${dmn_dev%/dm/name}"); break; }
+      done
+      [ -z "$dev" ] && continue
+      ;;
+    /dev/*)
+      dev=${fs#/dev/}
+      ;;
     *) continue ;;
   esac
   [ "$blk" -gt 0 ] || continue
@@ -210,7 +236,7 @@ while read -r fs blk used avail pct mount; do
     /*) ;;
     *) continue ;;
   esac
-  dev=$(echo "$fs" | sed 's|^/dev/||')
+  DF_DEVS="$DF_DEVS $dev"
   total_gb=$(awk "BEGIN{printf \"%.1f\", $blk/1048576}")
   used_gb=$(awk "BEGIN{printf \"%.1f\", $used/1048576}")
   pctv=$(awk "BEGIN{printf \"%.1f\", $used*100/$blk}")
@@ -228,22 +254,69 @@ else
   DISKS="[]"
 fi
 
-# --- Network rates (KB/s per interface, excl. loopback) ---
-NETS=$(awk 'NR==FNR { rx[$1]=$2; tx[$1]=$3; next }
-  { if ($1=="lo") next
-    if (!($1 in rx)) { rx[$1]=$2; tx[$1]=$3; next }
-    r=($2-rx[$1])*5/1024; t=($3-tx[$1])*5/1024;
-    if (r<0) r=0; if (t<0) t=0;
-    printf "{\"iface\":\"%s\",\"rx_kbs\":%.1f,\"tx_kbs\":%.1f},", $1, r, t }' \
-  "$NET_PRE" "$NET_POST")
+# Total disk I/O across the real filesystem devices (KB/s) → the "Disk"
+# metric is now a read/write rate, not a capacity percentage. Summing the
+# df-mounted partitions avoids double-counting whole-device + partition
+# entries that /proc/diskstats also carries.
+set -- $(awk -v devs="${DF_DEVS## }" 'BEGIN { n = split(devs, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 }
+  { if ($1 in want) { r += $2; w += $3 } }
+  END { printf "%.1f %.1f", r, w }' "$DISKIO")
+if [ -z "${1:-}" ] && [ -z "${2:-}" ]; then
+  # No df devices in diskstats (rare): fall back to physical whole devices.
+  set -- $(awk '!/^(loop|dm-|ram|zram|sr)/ { r += $2; w += $3 } END { printf "%.1f %.1f", r, w }' "$DISKIO")
+fi
+DISK_R_TOT=${1:-0}
+DISK_W_TOT=${2:-0}
+DISK_IO_TOT=$(awk "BEGIN{printf \"%.1f\", $DISK_R_TOT + $DISK_W_TOT}")
+
+# --- Network rates (KB/s). Mirrors the netspeed bar widget's reading: the
+#     delta between this tick and the last is divided by the real elapsed
+#     milliseconds, then EMA-smoothed (0.3/0.7) for a steady label. Virtual
+#     links (docker/br/veth/bridges) are excluded so wifi/ethernet win. ---
+NET_STATE="$D/.omc_net_state"
+NOW_MS=$(date +%s%3N 2>/dev/null || echo ${NOW}000)
+[ -f "$NET_STATE" ] || : > "$NET_STATE"   # first run: no prior counters, all rates 0
+
+awk 'NR>2 { sub(":","",$1); nm=tolower($1)
+      if (nm=="lo" || nm ~ /^docker[0-9]*/ || nm ~ /^br-/ || nm ~ /^virbr[0-9]*/ || nm ~ /^veth/ || nm ~ /^vboxnet[0-9]*/) next
+      print nm, $2, $10 }' /proc/net/dev > "$NET_CUR"
+
+NETS=$(awk -v now="$NOW_MS" -v stateout="$NET_STATE_NEW" 'NR==FNR {
+      rx[$1]=$2; tx[$1]=$3; order[++n]=$1; next }
+    {
+      ems = now - $6
+      if (ems < 1) ems = 2000
+      if ($1 in rx) {
+        drx = rx[$1] - $2; if (drx < 0) drx = 0
+        dtx = tx[$1] - $3; if (dtx < 0) dtx = 0
+        rr = drx * 1000.0 / 1024.0 / ems
+        tt = dtx * 1000.0 / 1024.0 / ems
+        srx[$1] = 0.3 * rr + 0.7 * $4
+        stx[$1] = 0.3 * tt + 0.7 * $5
+      }
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        nm = order[i]
+        if (!(nm in srx)) { srx[nm] = 0; stx[nm] = 0 }
+        if (srx[nm] < 0.05) srx[nm] = 0
+        if (stx[nm] < 0.05) stx[nm] = 0
+        printf "%s %d %d %.2f %.2f %d\n", nm, rx[nm], tx[nm], srx[nm], stx[nm], now > stateout
+        printf "{\"iface\":\"%s\",\"rx_kbs\":%.1f,\"tx_kbs\":%.1f},", nm, srx[nm], stx[nm]
+      }
+    }' "$NET_CUR" "$NET_STATE")
+
+mv "$NET_STATE_NEW" "$NET_STATE"
 if [ -n "$NETS" ]; then
   NETS="[${NETS%,}]"
 else
   NETS="[]"
 fi
 
-# Cumulative rx/tx bytes across all non-loopback interfaces (for history rolls).
-set -- $(awk '$1!="lo"{r+=$2; t+=$3} END{print r+0, t+0}' "$NET_POST")
+# Cumulative rx/tx bytes across the same real interfaces (for history rolls).
+set -- $(awk 'NR>2 { sub(":","",$1); nm=tolower($1)
+      if (nm=="lo" || nm ~ /^docker[0-9]*/ || nm ~ /^br-/ || nm ~ /^virbr[0-9]*/ || nm ~ /^veth/ || nm ~ /^vboxnet[0-9]*/) next
+      r+=$2; t+=$10 } END{print r+0, t+0}' /proc/net/dev)
 NET_TOT_RX=$1
 NET_TOT_TX=$2
 [ -z "$NET_TOT_RX" ] && NET_TOT_RX=0
@@ -430,7 +503,7 @@ PROCS=$(awk '
 
 # --- Persist sample, prune old data, and record metric spikes all in ONE
 #     sqlite3 call (was 5 separate invocations per tick). ---
-SQL="INSERT OR REPLACE INTO metrics (ts, cpu_pct, mem_used_mb, mem_total_mb, gpu_pct, gpu_temp, cpu_temp, proc_count, disk_pct, net_rx_bytes, net_tx_bytes) VALUES ($NOW, $CPU_PCT, $MEM_USED_MB, $MEM_TOTAL_MB, $GPU_PCT, $GPU_TEMP, $CPU_TEMP, $PROC_COUNT, $DISK_MAX_PCT, $NET_TOT_RX, $NET_TOT_TX);
+SQL="INSERT OR REPLACE INTO metrics (ts, cpu_pct, mem_used_mb, mem_total_mb, gpu_pct, gpu_temp, cpu_temp, proc_count, disk_pct, disk_io, disk_r, disk_w, net_rx_bytes, net_tx_bytes) VALUES ($NOW, $CPU_PCT, $MEM_USED_MB, $MEM_TOTAL_MB, $GPU_PCT, $GPU_TEMP, $CPU_TEMP, $PROC_COUNT, $DISK_MAX_PCT, $DISK_IO_TOT, $DISK_R_TOT, $DISK_W_TOT, $NET_TOT_RX, $NET_TOT_TX);
 DELETE FROM metrics WHERE ts < $NOW - 604800;
 DELETE FROM proc_history WHERE ts < $NOW - 86400;
 DELETE FROM events WHERE ts < $NOW - 1209600;"
@@ -456,7 +529,48 @@ PROC_MIN=$((NOW / 60))
 LAST_PROCMIN=$(cat "$DATA_DIR/.omc_proc_min" 2>/dev/null || echo 0)
 if [ "$PROC_MIN" -gt "$LAST_PROCMIN" ]; then
   PROC_TS=$((PROC_MIN * 60))
-  PROC_JSON="[$PROCS]"
+  # Per-process network KB/s for this minute (ss-based, like the netspeed
+  # widget). Merged into the snapshot so the chart drill-down can show who
+  # drove a network spike; bandwidth-only pids are appended to the CPU list.
+  NETPROCS_FILE="$D/.omc_netprocs.$$"
+  TMPFILES="$TMPFILES $NETPROCS_FILE"
+  OMCONTROL_DATA_DIR="$DATA_DIR" python3 "$(dirname "$0")/net-procs.py" > "$NETPROCS_FILE" 2>/dev/null
+  PROC_JSON=$(PROCS_RAW="$PROCS" OMC_NETPROCS="$NETPROCS_FILE" python3 - <<'PY'
+import json, os, sys
+raw = os.environ.get("PROCS_RAW", "").strip()
+net = []
+try:
+    net = json.load(open(os.environ["OMC_NETPROCS"]))
+except Exception:
+    net = []
+try:
+    procs = json.loads("[" + raw + "]") if raw else []
+except Exception:
+    procs = []
+netmap = {}
+for e in net:
+    netmap[str(e.get("pid"))] = e
+pidset = set()
+for p in procs:
+    pid = str(p.get("pid", ""))
+    n = netmap.get(pid)
+    p["nr"] = float(n.get("rx", 0)) if n else 0.0
+    p["nt"] = float(n.get("tx", 0)) if n else 0.0
+    pidset.add(pid)
+appended = 0
+for e in net:
+    if str(e.get("pid")) in pidset:
+        continue
+    procs.append({"pid": int(e.get("pid") or 0), "cpu": 0.0, "mem": 0.0,
+                  "swap": 0.0, "io_kbs": 0.0, "gpu_mem": 0.0, "gpu": 0.0,
+                  "name": e.get("name") or str(e.get("pid") or "?"),
+                  "nr": float(e.get("rx", 0) or 0), "nt": float(e.get("tx", 0) or 0)})
+    appended += 1
+    if appended >= 20:
+        break
+print(json.dumps(procs))
+PY
+)
   PROC_JSON_SQL=$(echo "$PROC_JSON" | sed "s/'/''/g")
   sqlite3 -cmd ".timeout 1500" "$DB" "INSERT OR REPLACE INTO proc_history VALUES ($PROC_TS, '$PROC_JSON_SQL');" 2>/dev/null
   awk '{print $1, $4}' "$PS_FILE" | OMCONTROL_DB="$DB" python3 "$(dirname "$0")/app-meta.py" 2>/dev/null
@@ -579,6 +693,9 @@ cat <<ENDJSON
   "swap_used_mb": $SWAP_USED_MB,
   "cpu_temp": $CPU_TEMP,
   "disk_pct": $DISK_MAX_PCT,
+  "disk_io": $DISK_IO_TOT,
+  "disk_r": $DISK_R_TOT,
+  "disk_w": $DISK_W_TOT,
   "disks": $DISKS,
   "nets": $NETS,
   "gpu_pct": $GPU_PCT,

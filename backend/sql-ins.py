@@ -23,7 +23,7 @@ import os
 import sqlite3
 import sys
 
-from omc_prefs import normalize_mode
+from omc_prefs import DEVICE_TO_SENS, KIND_TO_SENS, normalize_mode
 
 DB = os.environ.get("OMCONTROL_DB") or os.path.expanduser(
     "~/.local/share/omcontrol/history.db")
@@ -56,25 +56,9 @@ PREF_PATH = os.environ.get(
     "OMCONTROL_ALERT_PREFS"
 ) or os.path.expanduser("~/.local/share/omcontrol/alert_prefs.json")
 
-# Source channel -> (key, alert sensitivity label).
-TOAST_TYPE = {
-    "event": {
-        "app_launch": "New App Launch",
-        "app_exit": "App Exit",
-        "unsigned_launch": "Unsigned App Launch",
-        "publisher_block": "Unsigned App Launch",
-        "unknown_app": "Unsigned App Launch",
-        "suspicious_app": "New Suspicious App",
-        "service_change": "Service Change",
-        "service_launch": "New Service Launch",
-        "app_update": "App Update",
-    },
-    "privacy": {
-        "microphone": "Mic or Cam Access",
-        "camera": "Mic or Cam Access",
-        "location": "Location Tracking",
-    },
-}
+# Channel -> alert sensitivity labels now live in omc_prefs (KIND_TO_SENS /
+# DEVICE_TO_SENS), shared with unread.sh so the bell count and the toast
+# funnel can never drift apart.
 
 TOAST_SUMMARY = {
     "New App Launch": "New app launched",
@@ -161,7 +145,7 @@ def main():
                             continue
                     events.append((ts, etype, app, pub, msg))
                     if toasting:
-                        sens = TOAST_TYPE["event"].get(etype)
+                        sens = KIND_TO_SENS.get(etype)
                         if sens and alert_mode(sens, prefs) == "toast":
                             ev_toast.append((sens, app))
                 elif op == "privacy" and len(f) >= 6:
@@ -169,7 +153,7 @@ def main():
                     device = f[3]
                     privacy.append((ts, f[2], f[3], f[4], int(f[5] if f[5] else 0)))
                     if toasting and f[2] == "start":
-                        sens = TOAST_TYPE["privacy"].get(device)
+                        sens = DEVICE_TO_SENS.get(device)
                         if sens and alert_mode(sens, prefs) == "toast":
                             priv_toast.append((sens, f[4]))
             except (ValueError, IndexError):

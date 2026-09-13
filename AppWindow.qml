@@ -42,7 +42,7 @@ PanelWindow {
   readonly property color accentSoft: Qt.rgba(accent.r, accent.g, accent.b, 0.14)
 
   // ---- Data (DB snapshot via sample-json.sh) ----
-  property var sample: ({ cpu: 0, mem: 0, gpu: 0, procs: 0, disk: 0,
+  property var sample: ({ cpu: 0, mem: 0, gpu: 0, procs: 0, disk: 0, disk_r: 0, disk_w: 0,
                           net_rx_kbs: 0, net_tx_kbs: 0,
                           history_1h: [], history_6h: [], history_1d: [],
                           p_list: [], snaps: [], apps: [], catalog: [],
@@ -51,31 +51,41 @@ PanelWindow {
   property string selMetric: "cpu"
   property int chartWindow: 3600
 
-  // Net chart auto-scales KiB/s → Mbps (×8 bits, decimal M) so live transfer
-  // rates read like "9190" with an "Mbps" unit instead of "1148774".
+  // Omarchy-style rotating tagline under the title; a new quip every 5s.
+  readonly property var subtitles: [
+    "Your machine, live",
+    "Keeping an eye on your CPU since forever",
+    "Every process has a story — here it is",
+    "Spikes, apps, and the occasional villain",
+    "Sampled every 2 seconds. Yes, really.",
+    "Your RAM called. It wants peace.",
+    "Somebody downloaded something…",
+    "The GPU snores. The charts do not.",
+    "Events: where apps get caught red-handed",
+    "Kill, disable, repeat.",
+    "The charts never lie. Mostly.",
+    "Logged on since PID 1"
+  ]
+  property int subtitleIdx: 0
+  readonly property string subtitleText: root.subtitles[root.subtitleIdx % root.subtitles.length]
+  Timer {
+    interval: 5000
+    running: true
+    repeat: true
+    onTriggered: root.subtitleIdx++
+  }
+
+  // Net and Disk series are KB/s (bytes), matching the pill/popup/tooltip.
   readonly property var chartPtsRaw: root.seriesFor(root.selMetric, root.chartWindow)
-  readonly property real chartScale: (function() {
-    if (root.selMetric !== "net") return 1
-    var m = 0, pts = root.chartPtsRaw
-    for (var i = 0; i < pts.length; i++) if (pts[i].v > m) m = pts[i].v
-    return m >= 125 ? 125 : 1
-  })()
-  readonly property string chartUnit:
-      root.selMetric !== "net" ? (root.metricUnits[root.selMetric] || "")
-      : (root.chartScale >= 125 ? "Mbps" : "Kbps")
-  readonly property var chartPts: (function() {
-    var pts = root.chartPtsRaw
-    var s = root.chartScale
-    if (s <= 1) return pts
-    var out = []
-    for (var i = 0; i < pts.length; i++) out.push({ ts: pts[i].ts, v: pts[i].v / s })
-    return out
-  })()
+  readonly property real chartScale: 1
+  readonly property string chartUnit: root.metricUnits[root.selMetric] || ""
+  readonly property var chartPts: root.chartPtsRaw
 
   property int activeTab: 0
   property string search: ""
   property var drillProcs: null
   property real drillTs: 0
+  property var rangeSummary: null
   property var filteredProcs: []
   property bool sampleProcRunning: false
   property var filteredApps: []
@@ -105,12 +115,12 @@ PanelWindow {
   property var eventCtx: null
   property bool eventCtxBusy: false
 
-  property var barPrefs: ({ stats: ["cpu", "cputemp"], mode: "icon" })
+  property var barPrefs: ({ stats: ["cpu", "cputemp"], mode: "name" })
   property bool barPrefsLoaded: false
   readonly property string dataDir: Quickshell.env("HOME") + "/.local/share/omcontrol"
   readonly property string barStatsPath: dataDir + "/barstats.json"
 
-  readonly property var metricUnits: ({ cpu: "%", mem: "%", gpu: "%", procs: "", disk: "%", net: "KB/s" })
+  readonly property var metricUnits: ({ cpu: "%", mem: "%", gpu: "%", procs: "", disk: "KB/s", net: "KB/s" })
   readonly property var sortOptions: [
     { v: "cpu", label: "CPU" },
     { v: "gpu", label: "GPU" },
@@ -228,7 +238,21 @@ PanelWindow {
     var list = root.sample.p_list || []
     for (var i = 0; i < list.length; i++) map[(list[i].name || "").toLowerCase()] = list[i]
     var got = snap.procs.slice()
-    got.sort(function(a, b) { return b.cpu - a.cpu })
+    var isNet = root.selMetric === "net"
+    var isIo = root.selMetric === "disk"
+    got.sort(function(a, b) {
+      if (isNet) {
+        var an = (a.nr || 0) + (a.nt || 0)
+        var bn = (b.nr || 0) + (b.nt || 0)
+        if (bn !== an) return bn - an
+      }
+      if (isIo) {
+        var ai = (a.io_kbs || 0)
+        var bi = (b.io_kbs || 0)
+        if (bi !== ai) return bi - ai
+      }
+      return b.cpu - a.cpu
+    })
     var out = []
     for (var j = 0; j < got.length && out.length < n; j++) {
       var e = got[j]
@@ -242,6 +266,111 @@ PanelWindow {
       out.push(copy)
     }
     return out
+  }
+
+  function showRangePopup(t1, t2) {
+    root.rangeSummary = root.buildRangeSummary(t1, t2)
+  }
+
+  function rangeMetricLabel(m) {
+    if (m === "cpu") return "CPU"
+    if (m === "mem") return "Memory"
+    if (m === "gpu") return "GPU"
+    if (m === "procs") return "Processes"
+    if (m === "disk") return "Disk"
+    if (m === "net") return "Network"
+    return m
+  }
+
+  function fmtRangePeak(metric, v) {
+    if (!isFinite(v) || v < 0) return "–"
+    if (metric === "net" || metric === "disk") return Model.fmtRate(v)
+    if (metric === "procs") return Math.round(v) + ""
+    return (v >= 100 ? Math.round(v) : v.toFixed(1)) + "%"
+  }
+
+  function fmtRangeVal(metric, v) {
+    if (!isFinite(v) || v < 0) return "–"
+    if (metric === "net") return Model.fmtRate(v)
+    if (metric === "procs") return Math.round(v) + ""
+    if (metric === "disk") return Math.round(v) + " KB/s"
+    return (v >= 100 ? Math.round(v) : v.toFixed(1)) + "%"
+  }
+
+  // True when a per-minute snapshot actually carries per-app data for the
+  // pill metric (net/disk values are absent on older snapshots collected
+  // before those fields existed; a snap full of zeroes means nothing to rank).
+  function snapHasMetric(sp, metric) {
+    if (metric !== "net" && metric !== "disk") return true
+    var procs = sp.procs || []
+    for (var j = 0; j < procs.length; j++) {
+      var e = procs[j]
+      if (metric === "net" && ((e.nr || 0) + (e.nt || 0)) > 0) return true
+      if (metric === "disk" && (e.io_kbs || 0) > 0) return true
+    }
+    return false
+  }
+
+  // Aggregate everything we know about a dragged time range for the Activity
+  // popup: device-level stats from the history series plus per-app averages
+  // from the per-minute process snapshots, ranked by the selected pill's metric.
+  function buildRangeSummary(t1, t2) {
+    if (t2 < t1) { var tt = t1; t1 = t2; t2 = tt }
+    var metric = root.selMetric
+    var pts = root.chartPtsRaw
+    var sum = 0, peak = -1, ppeak = 0, n = 0
+    for (var i = 0; i < pts.length; i++) {
+      var p = pts[i]
+      if (p.ts < t1 || p.ts > t2) continue
+      sum += p.v
+      n++
+      if (p.v > peak) { peak = p.v; ppeak = p.ts }
+    }
+    var acc = {}
+    var snaps = root.sample.snaps || []
+    var nsnap = 0, nsnapData = 0
+    for (var s = 0; s < snaps.length; s++) {
+      var sp = snaps[s]
+      if (sp.ts < t1 || sp.ts > t2) continue
+      nsnap++
+      if (!root.snapHasMetric(sp, metric)) continue
+      nsnapData++
+      var procs = sp.procs || []
+      for (var j = 0; j < procs.length; j++) {
+        var e = procs[j]
+        var name = e.name || "?"
+        var rec = acc[name] || { name: name, s: 0, k: 0, srx: 0, stx: 0 }
+        var val
+        if (metric === "cpu") val = e.cpu || 0
+        else if (metric === "mem") val = e.mem || 0
+        else if (metric === "gpu") val = e.gpu || 0
+        else if (metric === "disk") val = e.io_kbs || 0
+        else if (metric === "net") val = (e.nr || 0) + (e.nt || 0)
+        else val = e.cpu || 0
+        if ((metric === "net" || metric === "disk") && val <= 0) continue
+        rec.s += val
+        rec.k++
+        rec.srx += (e.nr || 0)
+        rec.stx += (e.nt || 0)
+        acc[name] = rec
+      }
+    }
+    var list = root.sample.p_list || []
+    var map = {}
+    for (var m = 0; m < list.length; m++) map[(list[m].name || "").toLowerCase()] = list[m]
+    var rows = []
+    for (var nm in acc) {
+      var r = acc[nm]
+      var key = metric === "net" ? (r.srx + r.stx) / Math.max(1, r.k) : r.s / Math.max(1, r.k)
+      var pi = map[(nm || "").toLowerCase()] || {}
+      rows.push({ name: nm, pretty: pi.pretty_name || nm, v: key,
+                  srx: r.srx / Math.max(1, r.k), stx: r.stx / Math.max(1, r.k) })
+    }
+    rows.sort(function(a, b) { return b.v - a.v })
+    if (rows.length > 10) rows.length = 10
+    return { t1: t1, t2: t2, metric: metric, mlabel: root.rangeMetricLabel(metric),
+             nsnap: nsnap, nsnapData: nsnapData, devAvg: n > 0 ? sum / n : 0, devPeak: peak < 0 ? null : peak,
+             peakAt: ppeak ? root.fmtTime(ppeak) : "", rows: rows }
   }
 
   function fmtTime(ts) {
@@ -452,39 +581,44 @@ PanelWindow {
   function isBarPref(id) { return (root.barPrefs.stats || []).indexOf(id) >= 0 }
   function barPrefPreview() {
     var list = root.barPrefs.stats || []
-    if (root.barPrefs.mode === "none") return "(values only, no icon or name)"
+    if (root.barPrefs.mode === "none") return "(values only, no names)"
     var out = []
     for (var i = 0; i < list.length; i++) {
-      var lead = root.barPrefs.mode === "name"
-          ? Model.barStatLabel(list[i])
-          : Model.barStatGlyph(list[i])
+      var lead = Model.barStatLabel(list[i])
       if (lead) out.push(lead)
     }
-    return out.length ? out.join("  ") : "(icon only)"
+    return out.length ? out.join("  ") : "(no stats selected)"
   }
   function toggleBarPref(id) {
     var list = (root.barPrefs.stats || []).slice()
     var i = list.indexOf(id)
     if (i >= 0) list.splice(i, 1); else list.push(id)
-    root.barPrefs = { stats: list, mode: root.barPrefs.mode || "icon", barShowBell: root.barPrefs.barShowBell !== false }
+    root.barPrefs = { stats: list, mode: root.barPrefs.mode || "name", barShowBell: root.barPrefs.barShowBell !== false, showBuyButton: root.barPrefs.showBuyButton !== false }
     root.saveBarPrefs()
   }
   function setBarPrefMode(m) {
-    if (m !== "icon" && m !== "name" && m !== "none") return
-    root.barPrefs = { stats: root.barPrefs.stats || [], mode: m, barShowBell: root.barPrefs.barShowBell !== false }
+    if (m !== "name" && m !== "none") return
+    root.barPrefs = { stats: root.barPrefs.stats || [], mode: m, barShowBell: root.barPrefs.barShowBell !== false, showBuyButton: root.barPrefs.showBuyButton !== false }
     root.saveBarPrefs()
   }
   function resetBarPrefs() {
-    root.barPrefs = { stats: ["cpu", "cputemp"], mode: "icon", barShowBell: true }
+    root.barPrefs = { stats: ["cpu", "cputemp"], mode: "name", barShowBell: true, showBuyButton: true }
     root.saveBarPrefs()
   }
   function setBarShowBell(on) {
-    root.barPrefs = { stats: root.barPrefs.stats || [], mode: root.barPrefs.mode || "icon", barShowBell: !!on }
+    root.barPrefs = { stats: root.barPrefs.stats || [], mode: root.barPrefs.mode || "name", barShowBell: !!on, showBuyButton: root.barPrefs.showBuyButton !== false }
     root.saveBarPrefs()
     root.runBackend("bar-prefs.sh", ["set-show-bell", on ? "on" : "off"])
   }
+  function setShowBuyButton(on) {
+    root.barPrefs = { stats: root.barPrefs.stats || [], mode: root.barPrefs.mode || "name", barShowBell: root.barPrefs.barShowBell !== false, showBuyButton: !!on }
+    root.saveBarPrefs()
+  }
+  function openBuyMeACoffee() {
+    Qt.openUrlExternally("https://ko-fi.com/davedes")
+  }
   function saveBarPrefs() {
-    var json = JSON.stringify({ stats: root.barPrefs.stats || [], mode: root.barPrefs.mode || "icon", barShowBell: root.barPrefs.barShowBell !== false })
+    var json = JSON.stringify({ stats: root.barPrefs.stats || [], mode: root.barPrefs.mode || "name", barShowBell: root.barPrefs.barShowBell !== false, showBuyButton: root.barPrefs.showBuyButton !== false })
     var safe = json.replace(/'/g, "'\\''")
     barPrefsSaveProc.command = ["sh", "-c",
       "mkdir -p '" + root.dataDir + "' && printf '%s' '" + safe + "' > '" + root.barStatsPath + "'"]
@@ -769,9 +903,9 @@ PanelWindow {
       onStreamFinished: {
         try {
           var parsed = JSON.parse(text)
-          if (Array.isArray(parsed)) root.barPrefs = { stats: parsed, mode: root.barPrefs.mode || "icon" }
-          else if (parsed && parsed.stats) root.barPrefs = { stats: parsed.stats, mode: ["icon","name","none"].indexOf(parsed.mode) >= 0 ? parsed.mode : "icon" }
-          root.barPrefs = { stats: root.barPrefs.stats || [], mode: root.barPrefs.mode || "icon", barShowBell: parsed.barShowBell !== false }
+          if (Array.isArray(parsed)) root.barPrefs = { stats: parsed, mode: root.barPrefs.mode || "name" }
+          else if (parsed && parsed.stats) root.barPrefs = { stats: parsed.stats, mode: ["name","none"].indexOf(parsed.mode) >= 0 ? parsed.mode : "name" }
+          root.barPrefs = { stats: root.barPrefs.stats || [], mode: root.barPrefs.mode || "name", barShowBell: parsed.barShowBell !== false, showBuyButton: parsed.showBuyButton !== false }
         } catch (e) {}
         root.barPrefsLoaded = true
       }
@@ -874,7 +1008,7 @@ PanelWindow {
             }
             Text {
               visible: !root.compact
-              text: "Your machine, live"
+              text: root.subtitleText
               color: root.dim2
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
@@ -918,12 +1052,12 @@ PanelWindow {
             anchors.left: parent.left
             spacing: Style.space(16)
 
-            OMCPill { label: "CPU"; value: root.liveValue("cpu") + "%"; active: root.selMetric === "cpu"; onChosen: root.selMetric = "cpu" }
-            OMCPill { label: "Memory"; value: root.liveValue("mem") + "%"; active: root.selMetric === "mem"; onChosen: root.selMetric = "mem" }
-            OMCPill { label: "GPU"; value: root.liveValue("gpu") + "%"; active: root.selMetric === "gpu"; onChosen: root.selMetric = "gpu" }
-            OMCPill { label: "Processes"; value: Math.round(root.liveValue("procs")); active: root.selMetric === "procs"; onChosen: root.selMetric = "procs" }
-            OMCPill { label: "Disk"; value: root.liveValue("disk") + "%"; active: root.selMetric === "disk"; onChosen: root.selMetric = "disk" }
-            OMCPill { label: "Net"; value: root.liveValue("net"); active: root.selMetric === "net"; onChosen: root.selMetric = "net" }
+            OMCPill { label: "CPU"; value: root.liveValue("cpu") + "%"; active: root.selMetric === "cpu"; onChosen: { root.selMetric = "cpu"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "Memory"; value: root.liveValue("mem") + "%"; active: root.selMetric === "mem"; onChosen: { root.selMetric = "mem"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "GPU"; value: root.liveValue("gpu") + "%"; active: root.selMetric === "gpu"; onChosen: { root.selMetric = "gpu"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "Processes"; value: Math.round(root.liveValue("procs")); active: root.selMetric === "procs"; onChosen: { root.selMetric = "procs"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "Disk"; value: "\u2193 " + root.fmtNet(root.sample.disk_r) + "  \u2191 " + root.fmtNet(root.sample.disk_w); active: root.selMetric === "disk"; onChosen: { root.selMetric = "disk"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "Net"; value: root.liveValue("net"); active: root.selMetric === "net"; onChosen: { root.selMetric = "net"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
           }
 
           Row {
@@ -947,7 +1081,7 @@ PanelWindow {
             anchors.topMargin: Style.space(6)
             anchors.left: parent.left
             anchors.right: parent.right
-            text: "drag to zoom · wheel to zoom around cursor · drag when zoomed to pan · double-click reset · click a point for that moment's processes"
+            text: "drag a range to see what used it (popup, ranked by the selected pill) · wheel to zoom · drag when zoomed to pan · double-click reset · click a point for that moment's processes"
             color: root.dim2
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
@@ -967,8 +1101,8 @@ PanelWindow {
             lineColor: root.accent
             events: root.chartEvents
             dangerColor: root.urgent
-            dangerThreshold: (root.selMetric === "procs" || root.selMetric === "net") ? -1 : 90
-            maxValue: (root.selMetric === "procs" || root.selMetric === "net") ? -1 : 100
+            dangerThreshold: (root.selMetric === "procs" || root.selMetric === "net" || root.selMetric === "disk") ? -1 : 90
+            maxValue: (root.selMetric === "procs" || root.selMetric === "net" || root.selMetric === "disk") ? -1 : 100
             unit: root.chartUnit
             windowSecs: root.chartWindow
             onDrilled: function(ts) {
@@ -985,6 +1119,9 @@ PanelWindow {
               root.drillProcs = root.topAt(ts, 20)
               if (!root.drillProcs.length) root.drillProcs = null
               if (root.compact) root.compact = false
+            }
+            onRangeSelected: function(t1, t2) {
+              root.showRangePopup(t1, t2)
             }
           }
 
@@ -1084,8 +1221,12 @@ PanelWindow {
               anchors.left: parent.left
               anchors.right: parent.right
               text: root.drillProcs
-                  ? "Processes at " + root.fmtTime(root.drillTs) + " · click the chart elsewhere to change the moment"
-                  : "Running processes · click a row for details & actions · NET column = system-wide transfer"
+                  ? (root.selMetric === "net"
+                      ? "Network usage at " + root.fmtTime(root.drillTs) + " · ranked by transfer · click the chart elsewhere to change the moment"
+                      : root.selMetric === "disk"
+                        ? "Disk I/O at " + root.fmtTime(root.drillTs) + " · ranked by I/O · click the chart elsewhere to change the moment"
+                        : "Processes at " + root.fmtTime(root.drillTs) + " · click the chart elsewhere to change the moment")
+                  : "Running processes · click a row for details & actions · NET column = live transfer per process"
               color: root.dim1
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
@@ -1121,6 +1262,8 @@ PanelWindow {
                 mem: modelData.mem
                 io: modelData.io_kbs
                 gpu: modelData.gpu
+                net: (modelData.nr !== undefined || modelData.nt !== undefined)
+                    ? ((Number(modelData.nr) || 0) + (Number(modelData.nt) || 0)) : -1
                 verified: modelData.verified
                 perms: modelData.perms
 instances: Number(modelData.instances) || 1
@@ -1136,6 +1279,183 @@ instances: Number(modelData.instances) || 1
                 onKill: root.appAction("kill", modelData.name)
                 onDisable: root.disableApp(modelData.name)
                 onEnable: root.enableApp(modelData.name)
+              }
+            }
+          }
+
+          // ---- Dragged-range popup: aggregates the highlighted area for the
+          // selected pill (CPU → top CPU apps, MEM → top memory apps, Net →
+          // top transfer apps, etc.). Shown when the user drags a range on the
+          // history graph; rebuilt live if a pill is switched while open.
+          Item {
+            id: rangePopup
+            visible: root.rangeSummary !== null
+            anchors.fill: parent
+            z: 150
+
+            MouseArea {
+              anchors.fill: parent
+              hoverEnabled: false
+              onClicked: root.rangeSummary = null
+            }
+
+            Shortcut {
+              sequence: "Escape"
+              onActivated: root.rangeSummary = null
+            }
+
+            Rectangle {
+              anchors.centerIn: parent
+              width: Math.min(parent.width - Style.space(48), Style.space(360))
+              implicitHeight: rpCol.implicitHeight + Style.space(20)
+              radius: Style.space(14)
+              color: root.surface
+              border.width: 1
+              border.color: root.surfaceBorder
+
+              Column {
+                id: rpCol
+                anchors.fill: parent
+                anchors.margins: Style.space(12)
+                spacing: Style.space(6)
+
+                Row {
+                  width: parent.width
+                  spacing: Style.space(8)
+
+                  Text {
+                    width: parent.width - Style.space(24)
+                    text: (root.rangeSummary ? root.rangeSummary.mlabel : "") + " in dragged range"
+                    color: root.fg
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                    elide: Text.ElideRight
+                  }
+
+                  Text {
+                    text: "\uf2d3"
+                    color: root.dim1
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.body
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.rangeSummary = null
+                    }
+                  }
+                }
+
+                Text {
+                  width: parent.width
+                  text: root.rangeSummary
+                      ? root.fmtTime(root.rangeSummary.t1) + " – " + root.fmtTime(root.rangeSummary.t2)
+                        + "   ·   " + root.rangeSummary.nsnap + " minute sample" + (root.rangeSummary.nsnap === 1 ? "" : "s")
+                      : ""
+                  color: root.dim1
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                Text {
+                  width: parent.width
+                  visible: root.rangeSummary
+                           && (root.rangeSummary.metric === "net" || root.rangeSummary.metric === "disk")
+                           && root.rangeSummary.nsnapData < root.rangeSummary.nsnap
+                  text: root.rangeSummary
+                      ? "· per-app " + (root.rangeSummary.metric === "net" ? "network" : "disk I/O")
+                        + " in " + root.rangeSummary.nsnapData + " of " + root.rangeSummary.nsnap + " minute sample"
+                        + (root.rangeSummary.nsnap === 1 ? "" : "s")
+                      : ""
+                  color: root.dim1
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                Text {
+                  width: parent.width
+                  visible: root.rangeSummary && root.rangeSummary.devPeak !== null
+                  text: root.rangeSummary
+                      ? ("Device peak " + root.fmtRangePeak(root.rangeSummary.metric, root.rangeSummary.devPeak)
+                         + (root.rangeSummary.peakAt ? " @ " + root.rangeSummary.peakAt + " · avg " + root.fmtRangeVal(root.rangeSummary.metric, root.rangeSummary.devAvg) : ""))
+                      : ""
+                  color: root.dim2
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                Rectangle {
+                  width: parent.width
+                  height: 1
+                  color: root.surfaceBorder
+                  visible: root.rangeSummary && root.rangeSummary.rows.length > 0
+                }
+
+                Repeater {
+                  model: root.rangeSummary ? root.rangeSummary.rows : []
+                  delegate: Row {
+                    width: rpCol.width
+                    spacing: Style.space(8)
+
+                    Rectangle {
+                      width: Style.space(7)
+                      height: Style.space(7)
+                      anchors.verticalCenter: parent.verticalCenter
+                      radius: Style.space(2)
+                      color: root.accent
+                      opacity: 0.6 + 0.4 * (1 - index / Math.max(1, root.rangeSummary.rows.length))
+                    }
+
+                    Text {
+                      width: parent.width - Style.space(120)
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: modelData.pretty
+                      color: root.fg
+                      font.family: root.contentFontFamily
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideRight
+                    }
+
+                    Text {
+                      width: Style.space(104)
+                      anchors.verticalCenter: parent.verticalCenter
+                      horizontalAlignment: Text.AlignRight
+                      text: root.rangeSummary
+                          ? (root.rangeSummary.metric === "net"
+                              ? Model.fmtRateShort(modelData.srx) + "↓ " + Model.fmtRateShort(modelData.stx) + "↑"
+                              : root.fmtRangeVal(root.rangeSummary.metric, modelData.v))
+                          : ""
+                      color: root.dim1
+                      font.family: root.contentFontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+                }
+
+                Text {
+                  width: parent.width
+                  wrapMode: Text.Wrap
+                  visible: root.rangeSummary && root.rangeSummary.rows.length === 0
+                  text: root.rangeSummary
+                      ? (root.rangeSummary.nsnap === 0
+                          ? "No per-minute process samples cover this range (samples keep ~90 minutes). Zoomed/app-level listing starts applying as new minutes land."
+                          : root.rangeSummary.nsnapData === 0 && (root.rangeSummary.metric === "net" || root.rangeSummary.metric === "disk")
+                              ? "No per-app " + (root.rangeSummary.metric === "net" ? "network" : "disk I/O")
+                                + " data in these minutes yet (per-app collection only started recently)."
+                              : "No per-process data for this range.")
+                      : ""
+                  color: root.dim2
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                Text {
+                  width: parent.width
+                  text: "Esc or click outside to close · switch a pill to re-ranked · drag again for a new range"
+                  color: root.dim2
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                }
               }
             }
           }
@@ -1601,9 +1921,18 @@ instances: Number(modelData.instances) || 1
           anchors.fill: parent
           anchors.margins: Style.space(16)
 
-          Column {
-            width: parent.width
-            spacing: Style.space(10)
+          Flickable {
+            id: settingsFlick
+            anchors.fill: parent
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            contentHeight: settingsCol.implicitHeight
+            interactive: settingsCol.implicitHeight > settingsFlick.height
+
+            Column {
+              id: settingsCol
+              width: settingsFlick.width
+              spacing: Style.space(10)
 
             Text {
               text: "BAR ICON STATS"
@@ -1632,28 +1961,6 @@ instances: Number(modelData.instances) || 1
                 font.pixelSize: Style.font.caption
                 font.bold: true
                 anchors.verticalCenter: parent.verticalCenter
-              }
-              Rectangle {
-                width: Style.space(64); height: Style.space(26); radius: Style.space(12)
-                border.width: 1
-                border.color: root.barPrefs.mode === "icon" ? root.accent : root.dim1
-                color: (setIconModeArea.containsMouse || root.barPrefs.mode === "icon")
-                    ? root.accentSoft : "transparent"
-                Text {
-                  anchors.centerIn: parent
-                  text: "Icon"
-                  color: root.barPrefs.mode === "icon" ? root.accent : root.dim1
-                  font.family: root.contentFontFamily
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                }
-                MouseArea {
-                  id: setIconModeArea
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.setBarPrefMode("icon")
-                }
               }
               Rectangle {
                 width: Style.space(64); height: Style.space(26); radius: Style.space(12)
@@ -1759,20 +2066,13 @@ instances: Number(modelData.instances) || 1
                       anchors.verticalCenter: parent.verticalCenter
                     }
                     Text {
-                      text: modelData.glyph || ""
-                      color: root.accent
-                      font.family: root.contentFontFamily
-                      font.pixelSize: Style.font.caption
-                      anchors.verticalCenter: parent.verticalCenter
-                    }
-                    Text {
                       text: modelData.label
                       color: root.dim1
                       font.family: root.contentFontFamily
                       font.pixelSize: Style.font.caption
                       anchors.verticalCenter: parent.verticalCenter
                       elide: Text.ElideRight
-                      width: parent.width - Style.space(60)
+                      width: parent.width - Style.space(26)
                     }
                   }
                   MouseArea {
@@ -1869,6 +2169,125 @@ instances: Number(modelData.instances) || 1
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
+            }
+
+            // ---- Support / Buy Me a Coffee (same pattern as the mouse &
+            // keybind settings plugin; hidden via the toggle below).
+            Text {
+              text: "SUPPORT"
+              color: root.fg
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.body
+              font.bold: true
+              font.letterSpacing: 1
+            }
+
+            Rectangle {
+              visible: root.barPrefs.showBuyButton !== false
+              width: parent.width
+              height: Style.space(50)
+              radius: Style.space(12)
+              color: donateRowHover.containsMouse ? Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.14) : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.07)
+              Row {
+                anchors.fill: parent
+                anchors.margins: Style.space(8)
+                spacing: Style.space(8)
+                Image {
+                  id: kofiImage
+                  visible: kofiImage.status !== Image.Error
+                  width: 143
+                  height: 36
+                  anchors.verticalCenter: parent.verticalCenter
+                  sourceSize.height: 72
+                  fillMode: Image.PreserveAspectFit
+                  smooth: true
+                  mipmap: true
+                  source: "https://storage.ko-fi.com/cdn/kofi5.png?v=6"
+                }
+                Rectangle {
+                  visible: kofiImage.status === Image.Error || kofiImage.status === Image.Null || kofiImage.status === Image.Loading
+                  width: 143
+                  height: 36
+                  radius: Style.space(12)
+                  color: "transparent"
+                  border.width: 1
+                  border.color: root.dim1
+                  Text {
+                    anchors.centerIn: parent
+                    text: "☕ Buy Me a Coffee"
+                    color: "#FF813F"
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
+                }
+                Text {
+                  width: parent.width - Style.space(180)
+                  elide: Text.ElideRight
+                  text: "Donate a coffee to support OmaControl"
+                  color: root.fg
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+              }
+              MouseArea {
+                id: donateRowHover
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.openBuyMeACoffee()
+              }
+            }
+
+            Rectangle {
+              width: parent.width
+              height: Style.space(42)
+              radius: Style.space(12)
+              color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.07)
+              Row {
+                anchors.fill: parent
+                anchors.margins: Style.space(8)
+                spacing: Style.space(8)
+                Text {
+                  text: "\uf7b6"
+                  color: root.barPrefs.showBuyButton !== false ? root.accent : root.dim1
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.body
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+                Text {
+                  width: parent.width - Style.space(70)
+                  elide: Text.ElideRight
+                  text: "Show the Buy Me a Coffee button"
+                  color: root.fg
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+                Rectangle {
+                  width: Style.space(46); height: Style.space(22); radius: Style.space(11)
+                  border.width: 1
+                  border.color: root.barPrefs.showBuyButton !== false ? root.accent : root.dim1
+                  color: (buyCoffeeHover.containsMouse || root.barPrefs.showBuyButton !== false) ? root.accentSoft : "transparent"
+                  Text {
+                    anchors.centerIn: parent
+                    text: root.barPrefs.showBuyButton !== false ? "ON" : "OFF"
+                    color: root.barPrefs.showBuyButton !== false ? root.accent : root.dim1
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
+                  MouseArea {
+                    id: buyCoffeeHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.setShowBuyButton(root.barPrefs.showBuyButton === false)
+                  }
+                }
+              }
+            }
             }
           }
         }
@@ -2301,11 +2720,12 @@ instances: Number(modelData.instances) || 1
         spacing: Style.space(4)
         Rectangle {
           visible: ar.app.disabled
-          width: Style.space(48)
+          width: arDisTxt.implicitWidth + Style.space(12)
           height: Style.space(16)
           radius: Style.space(8)
           color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.14)
           Text {
+            id: arDisTxt
             anchors.centerIn: parent
             text: "\uf05e  Disabled"
             color: root.dim1
@@ -2315,13 +2735,14 @@ instances: Number(modelData.instances) || 1
         }
         Rectangle {
           visible: ar.app.verified
-          width: Style.space(68)
+          width: arVerTxt.implicitWidth + Style.space(12)
           height: Style.space(16)
           radius: Style.space(8)
           color: Qt.rgba(0.3, 0.75, 0.45, 0.18)
           border.width: 1
           border.color: Qt.rgba(0.3, 0.75, 0.45, 0.5)
           Text {
+            id: arVerTxt
             anchors.centerIn: parent
             text: "\uf058  Verified"
             color: "#3fbf6f"
@@ -2331,13 +2752,14 @@ instances: Number(modelData.instances) || 1
         }
         Rectangle {
           visible: ar.unsigned
-          width: Style.space(60)
+          width: arUnsTxt.implicitWidth + Style.space(12)
           height: Style.space(16)
           radius: Style.space(8)
           color: Qt.rgba(0.9, 0.6, 0.15, 0.18)
           border.width: 1
           border.color: Qt.rgba(0.9, 0.6, 0.15, 0.5)
           Text {
+            id: arUnsTxt
             anchors.centerIn: parent
             text: "\uf071  Unsigned"
             color: "#e0a030"
@@ -2617,7 +3039,7 @@ instances: Number(modelData.instances) || 1
     readonly property color typed: root.eventTypeColor(event.kind || "")
     readonly property string icon: root.eventIcon(event.kind || "")
     property bool actionOpen: false
-    implicitHeight: (evr.actionOpen ? Style.space(52) : Style.space(30))
+    implicitHeight: (evr.actionOpen ? Style.space(54) : Style.space(30))
     width: parent ? parent.width : 0
 
     Rectangle {
@@ -2628,7 +3050,8 @@ instances: Number(modelData.instances) || 1
     Rectangle {
       anchors.left: parent.left
       anchors.leftMargin: Style.space(6)
-      anchors.verticalCenter: parent.verticalCenter
+      anchors.top: parent.top
+      anchors.topMargin: Style.space(6)
       width: Style.space(3)
       height: Style.space(18)
       radius: Style.space(2)
@@ -2637,8 +3060,11 @@ instances: Number(modelData.instances) || 1
     Text {
       anchors.left: parent.left
       anchors.leftMargin: Style.space(18)
-      anchors.verticalCenter: parent.verticalCenter
+      anchors.top: parent.top
+      anchors.topMargin: Style.space(5)
       width: Style.space(20)
+      height: Style.space(20)
+      horizontalAlignment: Text.AlignHCenter
       text: evr.icon
       color: evr.typed
       font.family: root.contentFontFamily
@@ -2647,7 +3073,8 @@ instances: Number(modelData.instances) || 1
     Rectangle {
       anchors.left: parent.left
       anchors.leftMargin: Style.space(48)
-      anchors.verticalCenter: parent.verticalCenter
+      anchors.top: parent.top
+      anchors.topMargin: Style.space(5)
       width: Style.space(56)
       height: Style.space(15)
       radius: Style.space(8)
@@ -2666,7 +3093,10 @@ instances: Number(modelData.instances) || 1
       anchors.leftMargin: Style.space(112)
       anchors.right: parent.right
       anchors.rightMargin: Style.space(96)
-      anchors.verticalCenter: parent.verticalCenter
+      anchors.top: parent.top
+      anchors.topMargin: Style.space(5)
+      height: Style.space(20)
+      verticalAlignment: Text.AlignVCenter
       text: (hasApp ? (event.app + " — ") : "") + (event.msg || "")
       color: root.fg
       font.family: root.contentFontFamily
@@ -2677,7 +3107,10 @@ instances: Number(modelData.instances) || 1
     Text {
       anchors.right: parent.right
       anchors.rightMargin: Style.space(44)
-      anchors.verticalCenter: parent.verticalCenter
+      anchors.top: parent.top
+      anchors.topMargin: Style.space(5)
+      height: Style.space(20)
+      verticalAlignment: Text.AlignVCenter
       text: root.fmtAgo(event.ts || 0)
       color: root.dim2
       font.family: root.contentFontFamily
@@ -2688,9 +3121,12 @@ instances: Number(modelData.instances) || 1
       z: 5
       anchors.right: parent.right
       anchors.rightMargin: Style.space(8)
-      anchors.verticalCenter: parent.verticalCenter
+      anchors.top: parent.top
+      anchors.topMargin: Style.space(5)
       width: Style.space(26)
+      height: Style.space(20)
       horizontalAlignment: Text.AlignHCenter
+      verticalAlignment: Text.AlignVCenter
       text: evr.actionOpen ? "\uf077" : "\uf078"
       color: root.dim2
       font.family: root.contentFontFamily
@@ -2706,11 +3142,11 @@ instances: Number(modelData.instances) || 1
       z: 4
       visible: evr.actionOpen
       anchors.top: parent.top
-      anchors.topMargin: Style.space(28)
+      anchors.topMargin: Style.space(30)
       anchors.left: parent.left
       anchors.leftMargin: Style.space(112)
       spacing: Style.space(6)
-      height: Style.space(20)
+      height: Style.space(22)
       ActionChip {
         label: "Details"
         onChosen: evr.details(evr.event)
@@ -3730,6 +4166,7 @@ instances: Number(modelData.instances) || 1
     property real mem: 0
     property real io: 0
 property real gpu: 0
+    property real net: -1
     property bool verified: false
     property var perms: []
     property int instances: 1
@@ -3778,11 +4215,12 @@ property real gpu: 0
       spacing: Style.space(4)
       Rectangle {
         visible: pr.disabled
-        width: Style.space(50)
+        width: prDisTxt.implicitWidth + Style.space(10)
         height: Style.space(14)
         radius: Style.space(7)
         color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.14)
         Text {
+          id: prDisTxt
           anchors.centerIn: parent
           text: "\uf05e Disabled"
           color: root.dim1
@@ -3792,13 +4230,14 @@ property real gpu: 0
       }
       Rectangle {
         visible: pr.verified
-        width: Style.space(62)
+        width: prVerTxt.implicitWidth + Style.space(10)
         height: Style.space(14)
         radius: Style.space(7)
         color: Qt.rgba(0.3, 0.75, 0.45, 0.18)
         border.width: 1
         border.color: Qt.rgba(0.3, 0.75, 0.45, 0.5)
         Text {
+          id: prVerTxt
           anchors.centerIn: parent
           text: "\uf058 Verified"
           color: "#3fbf6f"
@@ -3808,13 +4247,14 @@ property real gpu: 0
       }
       Rectangle {
         visible: !pr.verified
-        width: Style.space(62)
+        width: prUnsTxt.implicitWidth + Style.space(10)
         height: Style.space(14)
         radius: Style.space(7)
         color: Qt.rgba(0.9, 0.6, 0.15, 0.15)
         border.width: 1
         border.color: Qt.rgba(0.9, 0.6, 0.15, 0.45)
         Text {
+          id: prUnsTxt
           anchors.centerIn: parent
           text: "Unsigned"
           color: "#e0a030"
@@ -3880,7 +4320,8 @@ property real gpu: 0
       anchors.verticalCenter: parent.verticalCenter
       width: Style.space(56)
       horizontalAlignment: Text.AlignHCenter
-      text: root.fmtNet((root.sample.net_rx_kbs || 0) + (root.sample.net_tx_kbs || 0))
+      text: root.fmtNet(pr.net >= 0 ? pr.net
+          : (root.sample.net_rx_kbs || 0) + (root.sample.net_tx_kbs || 0))
       color: root.dim1
       font.family: root.contentFontFamily
       font.pixelSize: Style.font.caption
@@ -4236,6 +4677,7 @@ property real gpu: 0
     property real dragCur: -1
     property bool dragMoved: false
     property real hoverPointerX: -1
+    signal rangeSelected(real t1, real t2)
 
     MouseArea {
       anchors.fill: parent
@@ -4260,6 +4702,7 @@ property real gpu: 0
             hg.panBy(movedT - startT)
             hg.dragStart = mouse.x
           } else {
+            if (!hg.dragMoved && Math.abs(mouse.x - hg.dragStart) >= 6) hg.dragMoved = true
             hg.dragCur = mouse.x
             hg.requestPaint()
           }
@@ -4280,7 +4723,10 @@ property real gpu: 0
         hg.dragStart = -1
         hg.dragCur = -1
         if (hg.dragMoved) {
-          if (!hg.zoomed) hg.zoomTo(hg.timeAtX(startX), hg.timeAtX(mouse.x))
+          if (!hg.zoomed) {
+            hg.zoomTo(hg.timeAtX(startX), hg.timeAtX(mouse.x))
+            hg.rangeSelected(hg.viewStart, hg.viewEnd)
+          }
           hg.dragMoved = false
           hg.requestPaint()
         } else {
@@ -4359,17 +4805,35 @@ property real gpu: 0
         if (!near && hg.pts.length) near = hg.pts[hg.pts.length - 1]
         if (!near) return
         tipTime.text = root.fmtTime(near.ts)
-        tipValue.text = Math.round(near.v) + hg.unit
+        tipValue.text = (root.selMetric === "disk" || root.selMetric === "net") ? Model.fmtRate(near.v)
+                        : Math.round(near.v) + hg.unit
         var top = []
         var sel = root.nearestSnap(near.ts)
         if (sel && sel.procs) {
           var arr = sel.procs.slice()
-          arr.sort(function(a, b) { return b.cpu - a.cpu })
+          var tipNet = root.selMetric === "net"
+          var tipIo = root.selMetric === "disk"
+          arr.sort(function(a, b) {
+            if (tipNet) {
+              var an2 = (a.nr || 0) + (a.nt || 0)
+              var bn2 = (b.nr || 0) + (b.nt || 0)
+              if (bn2 !== an2) return bn2 - an2
+            }
+            if (tipIo) {
+              var ai2 = (a.io_kbs || 0)
+              var bi2 = (b.io_kbs || 0)
+              if (bi2 !== ai2) return bi2 - ai2
+            }
+            return b.cpu - a.cpu
+          })
           top = [arr[0], arr[1], arr[2]]
         }
         tipTop.text = ""
         for (var k = 0; k < top.length && top[k]; k++) {
-          tipTop.text += (k > 0 ? " · " : "") + top[k].name + " " + Math.round(top[k].cpu) + "%"
+          tipTop.text += (k > 0 ? " · " : "") + top[k].name + " "
+              + (tipNet ? Math.round((top[k].nr || 0) + (top[k].nt || 0)) + " KB/s"
+                        : tipIo ? Math.round(top[k].io_kbs || 0) + " KB/s"
+                                 : Math.round(top[k].cpu) + "%")
         }
         // Pinned events near this moment (the 3 closest within ±5 min).
         var pins = []

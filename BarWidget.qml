@@ -15,7 +15,7 @@ BarWidget {
   property var privacyDevices: []
   property var privacyEvents: []
   property var barStats: ["cpu", "cputemp"]
-  property string barStatMode: "icon"
+  property string barStatMode: "name"
   property bool barShowBell: true
   property int unreadCount: 0
   property string bellColorToken: "dim"
@@ -50,8 +50,7 @@ BarWidget {
     for (var i = 0; i < list.length; i++) {
       var v = Model.barStatValue(lastData, list[i])
       if (!v) continue
-      var lead = root.barStatMode === "name" ? Model.barStatLabel(list[i])
-          : (root.barStatMode === "icon" ? Model.barStatGlyph(list[i]) : "")
+      var lead = root.barStatMode === "none" ? "" : Model.barStatLabel(list[i])
       parts.push(lead ? lead + " " + v : v)
     }
     var prefix = (root.barShowBell && root.unreadCount > 0) ? "󰂞 " + root.unreadCount + " " : ""
@@ -165,7 +164,7 @@ BarWidget {
         appWindow: appLoader.item ? appLoader.item.open === true : false,
         activeTab: appLoader.item ? appLoader.item.activeTab : 0,
         barStats: root.barStats || [],
-        barStatMode: root.barStatMode || "icon"
+        barStatMode: root.barStatMode || "name"
       })
     }
     function openApp(): void {
@@ -240,7 +239,7 @@ BarWidget {
             root.barStats = parsed
           } else if (parsed && parsed.stats) {
             root.barStats = parsed.stats
-            if (parsed.mode === "name" || parsed.mode === "icon" || parsed.mode === "none") root.barStatMode = parsed.mode
+            if (parsed.mode === "name" || parsed.mode === "none") root.barStatMode = parsed.mode
           }
         } catch (e) {}
       }
@@ -262,7 +261,7 @@ BarWidget {
   }
 
   function setBarStatMode(mode) {
-    if (mode !== "icon" && mode !== "name" && mode !== "none") return
+    if (mode !== "name" && mode !== "none") return
     root.barStatMode = mode
     root.saveBarPrefs()
   }
@@ -357,9 +356,13 @@ BarWidget {
     bar: root.bar
     triggerMode: "click"
     contentWidth: Style.space(210)
-    contentHeight: menuCol.implicitHeight + Style.space(8)
 
     function dismiss() { contextMenu.open = false }
+
+    // contentHeight sizes the whole popup window; the card's padding + border
+    // (verticalContentInset) is drawn on top, so it must be added back or the
+    // last row gets clipped.
+    contentHeight: menuCol.implicitHeight + contextMenu.verticalContentInset + Style.space(4)
 
     Column {
       id: menuCol
@@ -436,25 +439,6 @@ BarWidget {
 
       Item { width: parent.width; height: Style.space(4) }
 
-      MenuItem {
-        glyph: "󰒇"
-        label: "Enforce rules"
-        action: function() {
-          contextMenu.dismiss()
-          root.enforceRules()
-        }
-      }
-      MenuItem {
-        glyph: "󰅪"
-        label: "Kill top CPU process"
-        action: function() {
-          if (root.lastData && root.lastData.processes && root.lastData.processes.length > 0) {
-            var top = root.lastData.processes[0]
-            root.bar.run("kill -9 " + top.pid)
-            root.notify("OmaControl", "Killed " + top.name + " (PID " + top.pid + ")", "low")
-          }
-        }
-      }
       MenuItem { glyph: "󰑓"; label: "Refresh"; action: function() { root.refresh() } }
     }
   }
