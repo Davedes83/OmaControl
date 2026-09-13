@@ -633,20 +633,6 @@ PanelWindow {
     return "none"
   }
 
-  // Chart-matching color per sensitivity label (mirrors HistoryGraph.evColor
-  // and backend/unread.sh COLORS) so the Alerts pills preview the chart/bell hue.
-  function alertTypeColor(type) {
-    switch (type) {
-      case "New App Launch": return Qt.rgba(0.24, 0.7, 0.44, 1)
-      case "App Exit": return Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.85)
-      case "Mic or Cam Access":
-      case "Location Tracking":
-      case "Unsigned App Launch":
-      case "New Suspicious App": return root.urgent
-      default: return root.accent
-    }
-  }
-
   // Event kind → alert sensitivity label (bell-badge gating).
   // Every kind the toast funnel knows is mapped so a "none" mode can silence
   // the bell for it; kinds without a mapping always count when alerts are on.
@@ -1282,32 +1268,34 @@ instances: Number(modelData.instances) || 1
           Text {
             id: alertsTitle
             anchors.top: parent.top
-            anchors.topMargin: Style.space(38)
+            anchors.topMargin: Style.space(44)
             anchors.left: parent.left
             anchors.right: parent.right
             text: "Per event type, pick how it surfaces — Toast · Notify me · Quiet — and whether it leaves a marker on the history chart"
             color: root.dim1
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
-            elide: Text.ElideRight
+            lineHeight: 1.3
+            wrapMode: Text.WordWrap
           }
 
           Text {
             id: alertsHelp
             anchors.top: alertsTitle.bottom
-            anchors.topMargin: Style.space(3)
+            anchors.topMargin: Style.space(8)
             anchors.left: parent.left
             anchors.right: parent.right
             text: "Each type gets one notification mode below; the Chart marker switch is independent of it. The Alerts ON/OFF pill above silences everything at once."
             color: root.dim2
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
+            lineHeight: 1.3
             wrapMode: Text.WordWrap
           }
 
           Row {
             anchors.top: alertsHelp.bottom
-            anchors.topMargin: Style.space(8)
+            anchors.topMargin: Style.space(14)
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
@@ -1332,17 +1320,18 @@ instances: Number(modelData.instances) || 1
               }
               Text {
                 width: parent.width
-                text: "Desktop pop-up the moment it happens, plus a count dot on the Events tab."
+                height: Style.space(34)
+                text: "Instant desktop pop-up, plus a count dot on the Events tab."
                 color: root.dim2
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.caption
+                lineHeight: 1.3
                 wrapMode: Text.WordWrap
               }
               Repeater {
                 model: root.alertTypes
                 delegate: OMCPill {
                   width: parent.width
-                  pillColor: root.alertTypeColor(modelData)
                   active: root.alertMode(modelData) === "toast"
                   label: modelData
                   onChosen: root.setAlertMode(modelData, "toast")
@@ -1369,17 +1358,18 @@ instances: Number(modelData.instances) || 1
               }
               Text {
                 width: parent.width
-                text: "No pop-up; adds a red count dot on the Events tab (bell icon) so you can check the log later."
+                height: Style.space(34)
+                text: "No pop-up; adds a red count dot on the Events (bell) tab to check later."
                 color: root.dim2
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.caption
+                lineHeight: 1.3
                 wrapMode: Text.WordWrap
               }
               Repeater {
                 model: root.alertTypes
                 delegate: OMCPill {
                   width: parent.width
-                  pillColor: root.alertTypeColor(modelData)
                   active: root.alertMode(modelData) === "notify"
                   label: modelData
                   onChosen: root.setAlertMode(modelData, "notify")
@@ -1406,17 +1396,18 @@ instances: Number(modelData.instances) || 1
               }
               Text {
                 width: parent.width
+                height: Style.space(34)
                 text: "No pop-up or badge — the event is only logged for later."
                 color: root.dim2
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.caption
+                lineHeight: 1.3
                 wrapMode: Text.WordWrap
               }
               Repeater {
                 model: root.alertTypes
                 delegate: OMCPill {
                   width: parent.width
-                  pillColor: root.alertTypeColor(modelData)
                   active: root.alertMode(modelData) === "none"
                   label: modelData
                   onChosen: root.setAlertMode(modelData, "none")
@@ -1443,17 +1434,18 @@ instances: Number(modelData.instances) || 1
               }
               Text {
                 width: parent.width
-                text: "Show it as a pin on the history chart to spot patterns — independent of the modes above."
+                height: Style.space(34)
+                text: "Pin on the history chart to spot patterns — independent of the modes above."
                 color: root.dim2
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.caption
+                lineHeight: 1.3
                 wrapMode: Text.WordWrap
               }
               Repeater {
                 model: root.alertTypes
                 delegate: OMCPill {
                   width: parent.width
-                  pillColor: root.alertTypeColor(modelData)
                   active: root.chartShown(modelData)
                   label: root.chartShown(modelData) ? modelData : (modelData + " · hidden")
                   onChosen: root.setChartToggle(modelData, !root.chartShown(modelData))
