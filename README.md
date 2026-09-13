@@ -1,31 +1,75 @@
 # OmaControl
 
-An Omarchy shell plugin (Quickshell, Hyprland) that turns your top-bar icon into an advanced task manager — real-time system monitoring, a per-app history database, process control, privacy alerts, and persistent event tracking.
+**A native task manager for Omarchy that actually remembers what happened.**
+
+Stock task managers show you *right now*. The moment something spikes and you look away, that information is gone. OmaControl keeps a running history of your system so you can scroll back and answer the question every Linux user eventually asks: *"what was my machine doing at 3am, and why is my fan still spinning?"*
+
+It lives as a single icon in your Omarchy top bar and opens into a full monitoring app — built specifically for Hyprland + Quickshell, with zero Electron, zero background daemon binaries, and zero data leaving your machine.
+
+## Why you'd want this over `btop`/`htop`
+
+`btop` is great at showing you the present. It can't tell you what launched an hour ago, whether your webcam turned on while you were away, or which unsigned binary just showed up on your system. OmaControl is built around three ideas stock monitors skip entirely:
+
+- **History, not just a snapshot.** Every 2 seconds, CPU, memory, GPU, disk, network, and temperature get written to a local SQLite database. Scrub back through the last hour, six hours, or day, click any point on the graph, and see exactly which processes were responsible.
+- **A memory for events, not just processes.** New app launched. Unsigned binary ran for the first time. Microphone turned on. A process spiked the CPU. All of it lands in a persistent, filterable Events feed — click any entry to see the full system state at that exact moment, not just a log line.
+- **Real enforcement, not just visibility.** Kill a runaway process, or permanently disable an app so it can't relaunch — even across reboots — instead of fighting the same background process every session.
 
 ## Features
 
-- **Live system monitoring in the bar** — CPU %, CPU/GPU temp, RAM, network and more as a single compact icon. Stats shown are fully customisable and persist to `barstats.json`:
-  - `icon` — glyph + value, `name` — label + value, `none` — values only
-  - pick any combination of stats (CPU, GPU, clocks, RAM, swap, disk, net up/down, processes, uptime, battery…)
-- **App Window** (left-click the bar icon) with five tabs:
-  - **Activity** — live MET pills (CPU, Memory, GPU, Processes, Disk, NET up/down) with interactive history graphs over 1H / 6H / 1D; click a graph point to see that moment's processes
-  - **Apps** — running apps and publishers with trust status, one-click details, and live action buttons
-  - **Alerts** — configurable thresholds and new-app/privacy alert controls
-  - **Events** — persistent history of significant events (unread in bold, action buttons stop apps instantly)
-  - **Settings** — choose which stats the bar icon shows and how they're rendered
-- **Per-app Details panel** — description/provenance (`exe`/`pkg`), peak & average CPU, memory, GPU and I/O from historical samples, plus a live count of TCP/UDP sockets for that app (no root required)
-- **Privacy alerts** — desktop notifications when the camera, microphone, or location are newly in use
-- **New-app detection** — notifies when an application is first seen running
-- **Process control** — kill, suspend/resume, priority boost/drop, or permanently disable an app (kill-now + enforce on next launch)
-- **Historical database** — samples collected every 2 s from `/proc` into SQLite; GPU utilization, VRAM and temperature come from `nvidia-smi` (NVIDIA) or the `amdgpu` driver's sysfs (AMD). Downsampled on the way in so you always have the full picture
+### 📊 Activity — a history graph you can actually use
+- Live CPU / Memory / GPU / Disk / Network / Process-count readouts, each with a full history graph behind it
+- **Drag to zoom, scroll to pan** — scrub back through 1 hour, 6 hours, or a full day of history
+- **Temperature strip** rendered directly under the graph, synced to whatever time range you're viewing
+- **Event pins** overlaid right on the timeline — see exactly when an app launched or a spike happened relative to the resource curve, and jump straight into the details
+- Hover any point for a ranked breakdown of exactly which processes were driving that moment
 
-## Installation
+### 📦 Apps — everything installed, everything running
+- Grouped by publisher, with trust/verification status pulled straight from your package manager
+- Live permission indicators — see at a glance which apps currently hold camera, mic, or location access
+- One click into a full detail panel: description, binary path, package, peak & average CPU/memory/GPU/I/O pulled from history, and a live count of open network sockets — no root required
+
+### 🔔 Alerts — notifications on your terms
+- Per-event-type control: desktop **toast**, silent **badge only**, or **off** — independently for new app launches, unsigned binaries, mic/camera access, location access, service changes, and more
+- Toggle whether any event type shows up as a pin on the Activity chart, separately from its notification behavior
+
+### 📜 Events — a real audit trail
+- Every launch, exit, resource spike, permission access, and security flag, filterable by category (Launches, Exits, Spikes, Permissions, Security, User actions)
+- Click any event for full context: the exact system state at that moment, the app's publisher and description, and how often that event type or app has shown up over the last week
+- Unread events are tracked with a badge on the bar icon, not just buried in a log
+
+### ⚙️ Process control that sticks
+- Kill, suspend, resume, or renice any process
+- **Disable an app permanently** — kills it now and blocks it from relaunching, enforced on every future launch, surviving reboots — not just a one-time kill you'll have to repeat tomorrow
+
+### 🛡️ Security & privacy, built in
+- New and unsigned/unverified binaries are automatically flagged, separate from ordinary launches
+- Desktop notification the moment your camera, microphone, or location gets accessed by any app
+- Works with both **NVIDIA** (`nvidia-smi`) and **AMD** (`amdgpu` sysfs) for GPU utilization and temperature — this isn't an NVIDIA-only tool
+
+### 🖥️ A bar icon that shows what *you* care about
+- Fully customizable: pick any combination of CPU, GPU, temps, RAM, swap, disk, network, process count, uptime, or battery
+- Three display styles per stat — icon+value, label+value, or value only
+
+### ⌨️ A real CLI for scripting
+Everything the GUI can do is scriptable via `omcontrol`:
+
+```bash
+omcontrol status                        # current sample + store summary
+omcontrol top --history 30m             # busiest apps over a time range
+omcontrol history --metric cpu --seconds 3600
+omcontrol procs-at <epoch_ts>           # process snapshot at a point in time
+omcontrol app disable <name>            # kill now, block on relaunch
+omcontrol rules add <name>              # persistent disable rule
+omcontrol events --limit 50             # recent events
+```
+
+## Install
 
 ```bash
 omarchy plugin add https://github.com/Davedes83/OmaControl.git --enable
 ```
 
-Then make sure the bar widget is in your bar layout in `~/.config/omarchy/shell.json` (it hot-reloads on save):
+Add the widget to your bar in `~/.config/omarchy/shell.json` (hot-reloads on save):
 
 ```json
 {
@@ -39,72 +83,38 @@ Then make sure the bar widget is in your bar layout in `~/.config/omarchy/shell.
 }
 ```
 
-Restart the shell:
-
 ```bash
 omarchy restart shell
 ```
+
+**Requirements:** [Omarchy](https://omarchy.org/), Hyprland, Quickshell, `sqlite3`, `python3`. GPU metrics work out of the box on both NVIDIA and AMD — no extra packages needed for AMD.
+
+## Usage
+
+- **Left-click** the bar icon — open/close the app window
+- **Middle-click** — refresh the current sample instantly
+- **Right-click** — jump to any tab, enforce disable rules, or kill the top CPU consumer without opening the window at all
+
+## How it works, briefly
+
+A lightweight collector samples `/proc` every 2 seconds and writes into a local SQLite database, downsampling older data automatically so the database stays bounded no matter how long it's been running. Nothing is sent anywhere — the entire history lives at `~/.local/share/omcontrol/history.db` on your machine, readable by the `omcontrol` CLI or any tool that speaks SQLite.
+
+## Data & config
+
+| Path | Contents |
+|---|---|
+| `~/.local/share/omcontrol/history.db` | Full metrics/events/app-metadata history |
+| `~/.local/share/omcontrol/barstats.json` | Bar icon stat selection |
+| `~/.local/share/omcontrol/rules.json` | Persistent app-disable rules |
+| `~/.local/share/omcontrol/alert_prefs.json` | Per-event notification modes |
+
+Override any of these with `OMCONTROL_DB`, `OMCONTROL_DATA_DIR`, or `OMCONTROL_RULES`.
 
 ## Remove
 
 ```bash
 omarchy plugin remove davedes.omcontrol
 ```
-
-## Usage
-
-1. **Left-click** the bar icon to open/close the App Window
-2. **Middle-click** to refresh the current sample
-3. **Right-click** for the context menu — jump to any tab, enforce rules, kill the top CPU process, or refresh
-4. In **Settings** choose the stats the icon shows and whether each is rendered as an icon, name, or value-only
-
-The widget also ships a CLI, `omcontrol`, for scripting:
-
-```bash
-omcontrol status                 # current sample + store summary
-omcontrol top --history 30m      # busiest apps over the last range
-omcontrol top --from TS --to TS  # ... between timestamps
-omcontrol history --metric cpu --seconds 3600   # downsampled series
-omcontrol procs-at <epoch_ts>    # process snapshot nearest to a timestamp
-omcontrol rules                  # list persistent disable rules
-omcontrol rules add <name>       # disable an app permanently
-omcontrol rules rm <name>        # remove a disable rule
-omcontrol events --limit 50      # recent persistent events
-omcontrol events read-all        # mark all events read
-omcontrol alert-prefs get        # show alert notification preferences
-omcontrol alert-prefs set <type> on|off
-omcontrol app open|close|toggle|tab 3
-omcontrol app kill <name>        # SIGTERM all processes of this name
-omcontrol app stop|cont <name>   # suspend / resume
-omcontrol app fast|slow <name>   # renice ±5 priority
-omcontrol app disable <name>     # kill now + enforce kill-on-launch
-omcontrol app enable <name>      # remove the persistent disable rule
-```
-
-Ranges accept `5m/10m/30m/1h/6h/24h/3d`; metrics are `cpu|mem|gpu|gtemp|ctemp`.
-
-## Data
-
-- `~/.local/share/omcontrol/history.db` — SQLite history (metrics, per-app snapshots, app metadata)
-- `~/.local/share/omcontrol/barstats.json` — bar icon stat selection
-- `~/.local/share/omcontrol/rules.json` — persistent disable rules
-
-Environment overrides: `OMCONTROL_DB`, `OMCONTROL_DATA_DIR`, `OMCONTROL_RULES`.
-
-## How It Works
-
-- `collect.sh` samples `/proc` every 2 s (CPU, memory, disk, per-process stats, network byte counters), then writes to SQLite; old samples are downsampled out-of-band to keep the table bounded. GPU metrics come from `nvidia-smi` (NVIDIA) or from the `amdgpu` sysfs interface when `nvidia-smi` is unavailable (AMD: `gpu_busy_percent`, VRAM counters, hwmon temperature). Per-process GPU memory attribution needs the NVIDIA XML dump and is therefore NVIDIA-only.
-- Per-app history (`app-stats.sh`) aggregates peak/avg CPU, memory, GPU and I/O from the per-process snapshot blobs in `proc_history`.
-- Live per-app socket counts come from `/proc/<pid>/fd` inode mapping into `/proc/net/{tcp,tcp6,udp,udp6}` — a small window into each app's network footprint without root.
-- Alert/enforcement rules are applied on sample ingestion; disallowed apps are killed at launch. Everything runs from the plugin's own backend scripts, so it keeps working even if the database grows large.
-
-## Requirements
-
-- [Omarchy](https://omarchy.org/) Linux
-- Hyprland compositor
-- Quickshell (the shell framework)
-- `sqlite3`, `python3`
-- GPU metrics: NVIDIA via `nvidia-smi`, or AMD via the kernel `amdgpu` driver (no extra package). Per-process GPU attribution remains NVIDIA-only.
 
 ## License
 
