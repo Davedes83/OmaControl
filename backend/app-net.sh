@@ -10,8 +10,6 @@ fi
 LC_ALL=C OMC_NAME="$NAME" python3 - <<'PY'
 import os, re, sys
 name = os.environ["OMC_NAME"]
-if len(name) > 15 and " " not in name:
-    pass
 pids = []
 for d in os.listdir("/proc"):
     if not d.isdigit():
@@ -66,7 +64,7 @@ def scan(path, is_udp):
         pass
 scan("/proc/net/tcp", False)
 scan("/proc/net/tcp6", False)
-scan("/proc/net/udp", False)
+scan("/proc/net/udp", True)
 scan("/proc/net/udp6", True)
 print('{"established":%d,"listening":%d,"udp":%d}' % (established, listening, udp))
 PY

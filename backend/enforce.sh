@@ -32,7 +32,9 @@ log_block() {
 TMP=$(mktemp /tmp/omc_rules.XXXXXX)
 KFILE=$(mktemp /tmp/omc_killed.XXXXXX)
 EFILE=$(mktemp /tmp/omc_errors.XXXXXX)
-trap 'rm -f "$TMP" "$KFILE" "$EFILE" "$LFILE"' EXIT INT TERM
+CUR_MASKED=$(mktemp /tmp/omc_masked.XXXXXX)
+MSVC_LIST="$DATA_DIR/masked_services"
+trap 'rm -f "$TMP" "$KFILE" "$EFILE" "$LFILE" "$CUR_MASKED"' EXIT INT TERM
 
 python3 - "$RULES_FILE" > "$TMP" <<'PY'
 import json, sys
@@ -55,9 +57,12 @@ grep -v '^$' "$TMP" | sed 's/\r$//' | while IFS='|' read -r kind action pattern;
   [ -z "$pattern" ] && continue
 
   if [ "$kind" = "service" ]; then
+    # Track every unit this run asks to mask so we can un-mask the ones whose
+    # rule went away — a mask once applied must not outlive the rule.
     if [ -z "$DRY_RUN" ]; then
       systemctl --user mask "$pattern" >/dev/null 2>&1
       systemctl --user stop "$pattern" >/dev/null 2>&1
+      echo "$pattern" >> "$CUR_MASKED"
     fi
     printf '%s\n' "{\"unit\":\"$pattern\",\"masked\":\"yes\"}" >> "$KFILE"
     continue
@@ -68,7 +73,9 @@ grep -v '^$' "$TMP" | sed 's/\r$//' | while IFS='|' read -r kind action pattern;
     # 15 chars; match-pids.sh closes that gap by also matching readlink exe).
     PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$pattern")
     [ -z "$PIDS" ] && PIDS=$(pgrep -f "$pattern" 2>/dev/null)
-    PIDS=$(echo "$PIDS" | sort -un)
+    # Drop our own pid so a pattern that matches the enforcement tooling (or
+    # anything in its own command line) can never made us kill ourselves.
+    PIDS=$(echo "$PIDS" | grep -vx "$$" | sort -un)
   else
     PIDS=""
   fi
@@ -90,6 +97,26 @@ grep -v '^$' "$TMP" | sed 's/\r$//' | while IFS='|' read -r kind action pattern;
     fi
   done
 done
+
+# Unmask services whose disable rule vanished (or was disabled): the mask is
+# persistent, so without this an enable/rule removal would never take effect.
+if [ -z "$DRY_RUN" ] && [ -f "$MSVC_LIST" ]; then
+  if [ -s "$CUR_MASKED" ]; then
+    grep -Fxvf "$CUR_MASKED" "$MSVC_LIST" | while IFS= read -r unit; do
+      [ -z "$unit" ] && continue
+      systemctl --user unmask "$unit" >/dev/null 2>&1
+      printf '%s\n' "{\"unit\":\"$unit\",\"masked\":\"no\"}" >> "$KFILE"
+    done
+  else
+    grep -v '^$' "$MSVC_LIST" | while IFS= read -r unit; do
+      [ -z "$unit" ] && continue
+      systemctl --user unmask "$unit" >/dev/null 2>&1
+      printf '%s\n' "{\"unit\":\"$unit\",\"masked\":\"no\"}" >> "$KFILE"
+    done
+  fi
+  cp "$CUR_MASKED" "$MSVC_LIST" 2>/dev/null
+  touch "$MSVC_LIST"
+fi
 
 # Flush audit rows through the parameterized writer (one transaction).
 if [ -s "$LFILE" ]; then

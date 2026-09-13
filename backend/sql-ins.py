@@ -55,6 +55,7 @@ INSERT_PRIVACY = (
 PREF_PATH = os.environ.get(
     "OMCONTROL_ALERT_PREFS"
 ) or os.path.expanduser("~/.local/share/omcontrol/alert_prefs.json")
+DROP_LOG = os.environ.get("OMCONTROL_DROP_LOG")  # when set, log dropped events
 
 # Channel -> alert sensitivity labels now live in omc_prefs (KIND_TO_SENS /
 # DEVICE_TO_SENS), shared with unread.sh so the bell count and the toast
@@ -75,12 +76,25 @@ TOAST_SUMMARY = {
 
 def _alert_prefs():
     try:
-        d = json.load(open(PREF_PATH))
+        with open(PREF_PATH, "r", encoding="utf-8") as f:
+            d = json.load(f)
     except Exception:
         return {"enabled": True, "types": {}}
     if not isinstance(d, dict):
         d = {}
     return d
+
+
+def _enabled(prefs):
+    """accepts true,1,yes,on / false,0,no,off; missing defaults to True"""
+    v = prefs.get("enabled", True)
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    if isinstance(v, str):
+        return v.strip().lower() not in ("0", "false", "no", "off", "")
+    return bool(v)
 
 
 def alert_mode(sens, prefs):
@@ -123,7 +137,7 @@ def main():
             con.execute(stmt)
         cur = con.cursor()
         prefs = _alert_prefs()
-        toasting = (prefs.get("enabled", True) is not False)
+        toasting = _enabled(prefs)
         ev_toast = []
         priv_toast = []
         events = []
@@ -142,6 +156,12 @@ def main():
                     if not pub:
                         pub = publisher(cur, meta, app)
                         if known and pub == "Unknown":
+                            if DROP_LOG:
+                                try:
+                                    with open(DROP_LOG, "a", encoding="utf-8") as df:
+                                        df.write("%d\t%s\t%s\n" % (ts, etype, app))
+                                except Exception:
+                                    pass
                             continue
                     events.append((ts, etype, app, pub, msg))
                     if toasting:

@@ -105,7 +105,7 @@ def main():
         started = 0
         try:
             with open("/proc/%d/stat" % pid) as f:
-                toks = f.read().split(")", 1)[1].split()
+                toks = f.read().rsplit(")", 1)[1].split()
             utime = int(toks[11]) / clk
             stime = int(toks[12]) / clk
             started = btime + int(toks[19]) / clk

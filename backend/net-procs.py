@@ -81,6 +81,19 @@ def comm_of(pid, names):
     return names.get(pid, "pid" + str(pid))
 
 
+def starttime_of(pid):
+    """Boot ticks when the process started — identity check against pid reuse
+    (a recycled /proc pid number would otherwise inherit the old baseline and
+    over-count the newcomer's first minute)."""
+    try:
+        with open("/proc/%d/stat" % pid, "r", encoding="utf-8",
+                  errors="replace") as f:
+            toks = f.read().rsplit(")", 1)[1].split()
+        return int(toks[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def main():
     text = run_ss()
     if not text:
@@ -102,7 +115,16 @@ def main():
     for pid, e in cur.items():
         if not have_base:
             break  # first snapshot just establishes the baseline (warm-up)
-        p = prev.get(pid, {})
+        p = prev.get(pid)
+        if p is None:
+            continue  # unknown pid: baseline-only on first sighting, never a
+                      # full-cumulative burst attributed to a fresh socket
+        # pid reuse guard: if the process identity changed, ignore stale
+        # counters and let this sighting be its own warm-up.
+        cur_start = starttime_of(int(pid))
+        base_start = p.get("start")
+        if cur_start is not None and base_start is not None and cur_start != base_start:
+            continue
         p_ts = float(p.get("ts") or now)
         elapsed = max(now - p_ts, 1.0)
         drx = e["r"] - (p.get("r") or 0)
@@ -121,17 +143,22 @@ def main():
     out = out[:40]
 
     # Persist the new baseline. PIDs that vanished from ss (all sockets closed)
-    # keep their old counters so a reappearing process isn't over-counted; its
-    # clock stays at the last time WE saw it, keeping the rate honest.
+    # keep their old counters for a while so a reappearing process isn't
+    # over-counted, but stale identities (>1h) are pruned to bound the file.
     newpids = {}
     for pid, p in prev.items():
-        if pid not in cur:
-            newpids[pid] = {"s": p.get("s", 0), "r": p.get("r", 0),
-                            "ts": p.get("ts", now)}
+        if pid in cur:
+            continue
+        if now - float(p.get("ts") or now) > 3600:
+            continue
+        newpids[pid] = {"s": p.get("s", 0), "r": p.get("r", 0),
+                        "ts": p.get("ts", now), "start": p.get("start")}
     for pid, e in cur.items():
-        newpids[pid] = {"s": e["s"], "r": e["r"], "ts": now}
+        cur_start = starttime_of(int(pid))
+        newpids[pid] = {"s": e["s"], "r": e["r"], "ts": now,
+                        "start": cur_start if cur_start is not None else None}
     try:
-        tmp = BASE + ".tmp"
+        tmp = "%s.tmp.%d" % (BASE, os.getpid())
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"pids": newpids}, f)
         os.replace(tmp, BASE)

@@ -91,8 +91,8 @@ SQL
   [ -z "$H1" ] && H1="[]"
   [ -z "$H6" ] && H6="[]"
   [ -z "$H1D" ] && H1D="[]"
-  printf '%s\n%s\n%s\n' "$H1" "$H6" "$H1D" > "$ROLL_CACHE.tmp"
-  mv "$ROLL_CACHE.tmp" "$ROLL_CACHE"
+  printf '%s\n%s\n%s\n' "$H1" "$H6" "$H1D" > "$ROLL_CACHE.tmp.$$"
+  mv "$ROLL_CACHE.tmp.$$" "$ROLL_CACHE"
   echo "$NOW" > "$ROLL_STAMP"
 fi
 
@@ -329,6 +329,14 @@ except Exception:
 events.sort(key=lambda x: -x["ts"])
 events = events[:200]
 
+def jload(s, fallback):
+    """Parse a JSON env var; corrupt content must not panic the whole output."""
+    try:
+        v = json.loads(s)
+        return v if v is not None else fallback
+    except Exception:
+        return fallback
+
 print(json.dumps({
     "cpu": float(os.environ.get("CPU", "0") or 0),
     "mem": int(os.environ.get("MEM", "0") or 0),
@@ -341,16 +349,16 @@ print(json.dumps({
     "net_tx_kbs": float(os.environ.get("TX", "0") or 0),
     "ctemp": float(os.environ.get("CTEMP", "0") or 0),
     "gtemp": float(os.environ.get("GTEMP", "0") or 0),
-    "history_1h": json.loads(os.environ.get("H1", "[]")),
-    "history_6h": json.loads(os.environ.get("H6", "[]")),
-    "history_1d": json.loads(os.environ.get("H1D", "[]")),
+    "history_1h": jload(os.environ.get("H1", "[]"), []),
+    "history_6h": jload(os.environ.get("H6", "[]"), []),
+    "history_1d": jload(os.environ.get("H1D", "[]"), []),
     "p_list": p_list,
     "snaps": snaps,
     "apps": apps,
     "catalog": catalog,
     "alerts": alerts,
     "events": events,
-    "alert_prefs": json.loads(os.environ.get("OMC_PREFS", "{}")),
+    "alert_prefs": jload(os.environ.get("OMC_PREFS", "{}"), {}),
     "disabled": disabled,
     "perms": {k: v for k, v in perms.items()},
 }))

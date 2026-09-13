@@ -27,6 +27,13 @@ usage() {
   exit 0
 }
 
+require_int() {
+  [ -n "${1:-}" ] && [ "${1:-}" -gt 0 ] 2>/dev/null || {
+    echo "error: expected positive integer, got '${1:-}'" >&2
+    exit 1
+  }
+}
+
 parse_range() {
   local v="$1"
   case "$v" in
@@ -77,16 +84,21 @@ do_top() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --history) shift; range=$(parse_range "$1") ;;
-      --limit) shift; limit="$1" ;;
-      --from) shift; from="$1" ;;
-      --to) shift; to="$1" ;;
+      --limit) shift; require_int "$1"; limit="$1" ;;
+      --from) shift; require_int "$1"; from="$1" ;;
+      --to) shift; require_int "$1"; to="$1" ;;
       *) shift ;;
     esac
   done
-  if [ -z "$from" ]; then
-    local now; now=$(date +%s)
+  local now; now=$(date +%s)
+  if [ -z "$from" ] && [ -n "$to" ]; then
+    from=$((to - range))
+  elif [ -n "$from" ] && [ -z "$to" ]; then
+    to=$((from + range))
+  elif [ -z "$from" ] && [ -z "$to" ]; then
     from=$((now - range)); to=$now
   fi
+  [ "$from" -le "$to" ] || { echo "error: --from ($from) is later than --to ($to)" >&2; exit 1; }
   OMCONTROL_DB="$DB" python3 - "$from" "$to" "$limit" <<'PY'
 import json, os, sqlite3, sys
 db = os.environ["OMCONTROL_DB"]
@@ -134,10 +146,10 @@ do_history() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --metric) shift; metric="$1" ;;
-      --seconds) shift; seconds="$1" ;;
+      --seconds) shift; require_int "$1"; seconds="$1" ;;
       --raw) shift; raw=1 ;;
-      --from) shift; from="$1" ;;
-      --to) shift; to="$1" ;;
+      --from) shift; require_int "$1"; from="$1" ;;
+      --to) shift; require_int "$1"; to="$1" ;;
       *) shift ;;
     esac
   done
@@ -149,12 +161,15 @@ do_history() {
     ctemp) col="avg(cpu_temp)" ;;
     *) echo "unknown metric '$metric' (cpu|mem|gpu|gtemp|ctemp)" >&2; exit 1 ;;
   esac
-  if [ -n "$from" ] && [ -n "$to" ]; then
+  if [ -n "$from" ] || [ -n "$to" ]; then
+    if [ -z "$to" ]; then to=$((from + seconds)); fi
+    if [ -z "$from" ]; then from=$((to - seconds)); fi
     t0=$from; t1=$to
   else
     local now; now=$(date +%s)
     t0=$((now - seconds)); t1=$now
   fi
+  [ "$t0" -le "$t1" ] || { echo "error: --from ($t0) is later than --to ($t1)" >&2; exit 1; }
   local bin=$((seconds / 120)); [ "$bin" -lt 60 ] && bin=60
   if [ "$raw" -eq 1 ]; then
     sqlite3 -cmd ".timeout 1500" "$DB" "
@@ -221,7 +236,7 @@ PY
 
 do_events() {
   local sub="${1:-list}" limit=120
-  if [ "$sub" = "--limit" ]; then limit="${2:-120}"; sub=list; fi
+  if [ "$sub" = "--limit" ]; then limit="${2:-120}"; require_int "$limit"; sub=list; fi
   case "$sub" in
     list)
       "$SNIPS_DIR/backend/events.sh" list --limit "$limit" \

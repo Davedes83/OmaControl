@@ -15,6 +15,20 @@ find "$DATA_DIR" -maxdepth 1 -mmin +30 \
   \( -name '.omc_*' -o -name '.cur_names.*' -o -name '.new_names.*' \
      -o -name '.promote.*' -o -name '.fresh.*' -o -name '.seen.*' \) -delete 2>/dev/null
 
+# Single-collector guard: BarWidget spawns collect.sh every 2s AND the
+# omcontrol-collect service runs it on the same cadence. Only one may run
+# per tick; the loser exits quietly and BarWidget just reuses its last
+# sample (parseCollect("") falls back to the previous payload).
+exec 9>"$DATA_DIR/.omc_collect.lock" 2>/dev/null || exit 0
+flock -n 9 2>/dev/null || exit 0
+
+# Escape a value for embedding inside a JSON double-quoted string: backslash
+# then quote doubling. Control chars are stripped so stray tabs/newlines can
+# never break the stdout blob.
+esc() {
+  printf '%s' "$1" | tr -d '\000-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
 # --- Toast notifications are fired from sql-ins.py (single choke point),
 #     which reads alert_prefs.json itself; nothing here needs the file. ---
 
@@ -75,6 +89,14 @@ SQL
   fi
 fi
 
+# One-time WAL switch (persistent per-DB): readers (sample-json, rollups,
+# omcontrol CLI) no longer block on the collector's writes and vice versa.
+WAL_MARK="$DATA_DIR/.omc_wal_on"
+if [ ! -f "$WAL_MARK" ]; then
+  sqlite3 -cmd ".timeout 1500" "$DB" "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;" >/dev/null 2>/dev/null
+  touch "$WAL_MARK"
+fi
+
 D="$DATA_DIR"
 CPU_PRE="$D/.omc_cpu_pre.$$"
 CPU_POST="$D/.omc_cpu_post.$$"
@@ -89,7 +111,7 @@ PROC_IO_PRE="$D/.omc_proc_io_pre.$$"
 PROC_IO_POST="$D/.omc_proc_io_post.$$"
 PROC_SWAP="$D/.omc_proc_swap.$$"
 TMPFILES="$CPU_PRE $CPU_POST $DS_PRE $DS_POST $NET_CUR $NET_STATE_NEW $DISKIO $DF_FILE $PS_FILE $PROC_IO_PRE $PROC_IO_POST $PROC_SWAP $DATA_DIR/.cur_names.$$ $DATA_DIR/.new_names.$$ $DATA_DIR/.promote.$$ $DATA_DIR/.fresh.$$ $DATA_DIR/.seen.$$"
-trap 'rm -f $TMPFILES' EXIT INT TERM
+trap 'rm -f -- $TMPFILES' EXIT INT TERM
 
 # --- Top 20 processes by CPU (snapshot once; used for per-proc IO + swap) ---
 # pcpu from ps is thread-summed and can exceed 100% (e.g. 300% = 3 cores of
@@ -242,7 +264,7 @@ while read -r fs blk used avail pct mount; do
   pctv=$(awk "BEGIN{printf \"%.1f\", $used*100/$blk}")
   set -- $(awk -v d="$dev" '$1==d{print $2, $3}' "$DISKIO")
   rk=${1:-0}; wk=${2:-0}
-  DISKS="$DISKS{\"dev\":\"$dev\",\"mount\":\"$mount\",\"size_gb\":$total_gb,\"used_gb\":$used_gb,\"pct\":$pctv,\"read_kbs\":$rk,\"write_kbs\":$wk},"
+  DISKS="$DISKS{\"dev\":\"$(esc "$dev")\",\"mount\":\"$(esc "$mount")\",\"size_gb\":$total_gb,\"used_gb\":$used_gb,\"pct\":$pctv,\"read_kbs\":$rk,\"write_kbs\":$wk},"
   # Report the busiest real filesystem as the overall "Disk" metric.
   OLDIFS=$IFS; IFS=.; set -- $pctv; IFS=$OLDIFS
   DISK_PCT_INT=$1
@@ -259,11 +281,11 @@ fi
 # df-mounted partitions avoids double-counting whole-device + partition
 # entries that /proc/diskstats also carries.
 set -- $(awk -v devs="${DF_DEVS## }" 'BEGIN { n = split(devs, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 }
-  { if ($1 in want) { r += $2; w += $3 } }
-  END { printf "%.1f %.1f", r, w }' "$DISKIO")
-if [ -z "${1:-}" ] && [ -z "${2:-}" ]; then
+  { if ($1 in want) { r += $2; w += $3; hit = 1 } }
+  END { if (hit) printf "%.1f %.1f", r, w; else printf "x" }' "$DISKIO")
+if [ -z "${1:-}" ] || [ "${1:-}" = "x" ]; then
   # No df devices in diskstats (rare): fall back to physical whole devices.
-  set -- $(awk '!/^(loop|dm-|ram|zram|sr)/ { r += $2; w += $3 } END { printf "%.1f %.1f", r, w }' "$DISKIO")
+  set -- $(awk '!/^(loop|dm-|ram|zram|sr)/ { r += $2; w += $3; hit = 1 } END { if (hit) printf "%.1f %.1f", r, w; else printf "0 0" }' "$DISKIO")
 fi
 DISK_R_TOT=${1:-0}
 DISK_W_TOT=${2:-0}
@@ -368,7 +390,9 @@ if command -v nvidia-smi >/dev/null 2>&1; then
       GPU_LINK_WIDTH=$(sed -n '0,/<current_link_width>/s/.*<current_link_width>\([0-9]*\)x.*/\1/p' "$GPUXML")
       GPU_LINK_WIDTH_MAX=$(sed -n '0,/<max_link_width>/s/.*<max_link_width>\([0-9]*\)x.*/\1/p' "$GPUXML")
       GPU_BUS=$(sed -n '0,/<pci_bus_id>/s/.*<pci_bus_id>00000000:\([0-9a-f]*:[0-9a-f]*\.[0-9]*\)<\/pci_bus_id>.*/0000:\1/p' "$GPUXML")
-      GPU_ENC=$(awk '/<encoder_stats>/{sec=1} sec && /<session_count>/{gsub(/[^0-9]/,""); print; exit} /<\/encoder_stats>/{sec=0}' "$GPUXML")
+      # GPU_ENC stays the utilization.encoder percentage from the query above;
+      # <session_count> is a session count, not a load figure, so it must not
+      # overwrite it.
       # Clocks: current from <clocks>, max from <max_clocks> — pull within section
       GPU_MEM_CLOCK=$(awk '
         /<clocks>/ {sec="cur"} /<\/clocks>/ {sec=""; next}
@@ -490,7 +514,7 @@ PROCS=$(awk '
   FILENAME == swapmap { swap[$1]=$2; next }
   FILENAME == ratemap { rate[$1]=$2; next }
   {
-    gsub(/[<>\x00-\x1F\x7F]/, " ", $4)
+    gsub(/[<>\x00-\x1F\x7F"\\]/, " ", $4)
     c = (ncores > 0) ? $2 / ncores : $2
     g = ($1 in gpu) ? gpu[$1] : 0
     gpct = (g > 0 && gpu_total > 0) ? g * 100 / gpu_total : 0
@@ -512,12 +536,14 @@ DELETE FROM events WHERE ts < $NOW - 1209600;"
 SPC=$(printf "%d" "${CPU_PCT%.*}" 2>/dev/null); [ -z "$SPC" ] && SPC=0
 if [ "$SPC" -ge 95 ]; then
   SQL="$SQL
-INSERT INTO events (ts, type, app, publisher, msg) VALUES ($NOW, 'cpu_spike', '', '', 'CPU peaked at $CPU_PCT%');"
+INSERT INTO events (ts, type, app, publisher, msg) VALUES ($NOW, 'cpu_spike', '', '', 'CPU peaked at $CPU_PCT%')
+  WHERE NOT EXISTS (SELECT 1 FROM events WHERE type='cpu_spike' AND ts > $NOW - 30);"
 fi
 SMM=$((MEM_TOTAL_KB > 0 ? (MEM_TOTAL_KB - MEM_AVAIL_KB) * 100 / MEM_TOTAL_KB : 0))
 if [ "$SMM" -ge 92 ]; then
   SQL="$SQL
-INSERT INTO events (ts, type, app, publisher, msg) VALUES ($NOW, 'mem_spike', '', '', 'Memory peaked at $SMM%');"
+INSERT INTO events (ts, type, app, publisher, msg) VALUES ($NOW, 'mem_spike', '', '', 'Memory peaked at $SMM%')
+  WHERE NOT EXISTS (SELECT 1 FROM events WHERE type='mem_spike' AND ts > $NOW - 30);"
 fi
 sqlite3 -cmd ".timeout 1500" "$DB" <<SQL 2>/dev/null
 $SQL
@@ -578,7 +604,7 @@ PY
   # (only "real" apps: resolved to a package/core, never ephemeral shells
   # or churning kernel worker threads).
   ps -eo comm --no-headers 2>/dev/null | sed 's/[[:space:]]*$//' \
-    | grep -vE '^(sh|bash|zsh|dash|fish|ps|pgrep|grep|awk|sed|sleep|cat|head|tail|true|false|tee|sort|uniq|comm|notify-send|xargs|find|rm|cp|mv|mkdir|dirname|basename|logout|timeout|omcontrol-poll|sd_notify|kworker|kthreadd|ksoftirqd|kswapd|kcompactd|khugepaged|kblockd|kdevtmpfs|khelper|writeback|jbd2|kcryptd|dmcrypt_write|oom_reaper|migration|watchdog|cpuhp|rcu|scsi_|usb_|irq/|ata_|xfs-|btrfs-|flush-|events_unbound|netns|kauditd|\[.*\]|systemd-udevd)$' \
+    | grep -vE '^(sh|bash|zsh|dash|fish|ps|pgrep|grep|awk|sed|sleep|cat|head|tail|true|false|tee|sort|uniq|comm|notify-send|xargs|find|rm|cp|mv|mkdir|dirname|basename|logout|timeout|omcontrol-poll|sd_notify|kworker.*|kthreadd|ksoftirqd|kswapd|kcompactd|khugepaged|kblockd|kdevtmpfs|khelper|writeback|jbd2|kcryptd|dmcrypt_write|oom_reaper|migration|watchdog|cpuhp|rcu|scsi_|usb_|irq/|ata_|xfs-|btrfs-|flush-|events_unbound|netns|kauditd|\[.*\]|systemd-udevd)$' \
     | sort -u > "$DATA_DIR/.cur_names_min.$$"
   if [ -f "$DATA_DIR/.last_names_min" ]; then
     while IFS= read -r nm; do
@@ -610,7 +636,7 @@ ps -eo pid,comm 2>/dev/null | while read -r pid name; do
     echo "$name"
   fi
 done | \
-  grep -vE '^(sh|bash|zsh|dash|fish|ps|pgrep|grep|awk|sed|sleep|cat|head|tail|true|false|tee|sort|uniq|comm|notify-send|omarchy-notification-send|xargs|find|rm|cp|mv|mkdir|dirname|basename|timeout|kworker|kthreadd|ksoftirqd|kswapd|kcompactd|khugepaged|kblockd|kdevtmpfs|khelper|writeback|jbd2|kcryptd|dmcrypt_write|oom_reaper|migration|watchdog|cpuhp|rcu|scsi_|usb_|irq/|ata_|xfs-|btrfs-|flush-|events_unbound|netns|kauditd|systemd-udevd)$' | \
+  grep -vE '^(sh|bash|zsh|dash|fish|ps|pgrep|grep|awk|sed|sleep|cat|head|tail|true|false|tee|sort|uniq|comm|notify-send|omarchy-notification-send|xargs|find|rm|cp|mv|mkdir|dirname|basename|timeout|kworker.*|kthreadd|ksoftirqd|kswapd|kcompactd|khugepaged|kblockd|kdevtmpfs|khelper|writeback|jbd2|kcryptd|dmcrypt_write|oom_reaper|migration|watchdog|cpuhp|rcu|scsi_|usb_|irq/|ata_|xfs-|btrfs-|flush-|events_unbound|netns|kauditd|systemd-udevd)$' | \
   sort | uniq > "$DATA_DIR/.cur_names.$$"
 
 comm -23 "$DATA_DIR/.cur_names.$$" <(sort "$SEEN_FILE") > "$DATA_DIR/.new_names.$$"
@@ -619,7 +645,7 @@ comm -23 "$DATA_DIR/.new_names.$$" <(sort "$CAND_FILE") > "$DATA_DIR/.fresh.$$"
 
 NEW_APPS="[]"
 if [ -s "$DATA_DIR/.promote.$$" ]; then
-  NEW_APPS=$(awk '{printf "{\"name\":\"%s\",\"first_seen\":'$NOW'}", $0; if (NR < n) printf ","}' n="$(wc -l < "$DATA_DIR/.promote.$$")" "$DATA_DIR/.promote.$$")
+  NEW_APPS=$(awk '{gsub(/["\\]/, " ", $0); printf "{\"name\":\"%s\",\"first_seen\":'$NOW'}", $0; if (NR < n) printf ","}' n="$(wc -l < "$DATA_DIR/.promote.$$")" "$DATA_DIR/.promote.$$")
   NEW_APPS="[$NEW_APPS]"
   while IFS= read -r nm; do
     nm=$(echo "$nm" | tr -d '\r')
@@ -662,7 +688,7 @@ fi
 sort -u "$SEEN_FILE" | tail -4000 > "$DATA_DIR/.seen.$$" && mv "$DATA_DIR/.seen.$$" "$SEEN_FILE"
 cp "$DATA_DIR/.fresh.$$" "$CAND_FILE"
 
-RECENT_APPS=$(tail -20 "$NEWAPPS_LOG" | tail -5 | awk '{printf "{\"name\":\"%s\",\"ts\":%s},", $2, $1}' | sed 's/,$//')
+RECENT_APPS=$(tail -20 "$NEWAPPS_LOG" | tail -5 | awk '{gsub(/["\\]/, " ", $2); printf "{\"name\":\"%s\",\"ts\":%s},", $2, $1}' | sed 's/,$//')
 [ -n "$RECENT_APPS" ] && RECENT_APPS="[$RECENT_APPS]" || RECENT_APPS="[]"
 
 rm -f "$DATA_DIR/.cur_names.$$" "$DATA_DIR/.new_names.$$" "$DATA_DIR/.promote.$$" "$DATA_DIR/.fresh.$$"
@@ -681,7 +707,7 @@ cat <<ENDJSON
   "cpu_max_mhz": $CPU_MAX_MHZ,
   "cpu_threads": ${CPU_THREADS:-0},
   "cpu_cores": ${CPU_CORES:-0},
-  "cpu_name": "$CPU_NAME",
+  "cpu_name": "$(esc "$CPU_NAME")",
   "uptime_s": $UPTIME_S,
   "mem_used_mb": $MEM_USED_MB,
   "mem_total_mb": $MEM_TOTAL_MB,
@@ -708,8 +734,8 @@ cat <<ENDJSON
   "gpu_clock_mhz": $GPU_CLOCK,
   "gpu_mem_clock_mhz": $GPU_MEM_CLOCK,
   "gpu_graphics_max_mhz": $GPU_GRAPHICS_CLOCK,
-  "gpu_name": "$GPU_NAME",
-  "gpu_driver": "$GPU_DRIVER",
+  "gpu_name": "$(esc "$GPU_NAME")",
+  "gpu_driver": "$(esc "$GPU_DRIVER")",
   "gpu_link_gen": "$GPU_LINK_GEN",
   "gpu_link_gen_max": "$GPU_LINK_GEN_MAX",
   "gpu_link_width": "$GPU_LINK_WIDTH",
@@ -721,13 +747,13 @@ cat <<ENDJSON
   "battery": {
     "present": $BAT_PRESENT,
     "percent": $BAT_PCT,
-    "status": "$BAT_STATUS",
+    "status": "$(esc "$BAT_STATUS")",
     "power_w": $BAT_POWER_W,
-    "model": "$BAT_MODEL"
+    "model": "$(esc "$BAT_MODEL")"
   },
-  "host": "$HOST",
-  "kernel": "$KERNEL",
-  "os_pretty": "$OS_PRETTY",
+  "host": "$(esc "$HOST")",
+  "kernel": "$(esc "$KERNEL")",
+  "os_pretty": "$(esc "$OS_PRETTY")",
   "proc_count": $PROC_COUNT,
   "ts": $NOW,
   "processes": [$PROCS],

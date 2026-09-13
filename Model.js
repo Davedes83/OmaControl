@@ -21,16 +21,6 @@ function fmtMem(mb) {
   return Math.round(mb) + " MB"
 }
 
-function fmtMemPct(used, total) {
-  if (!isFinite(used) || !isFinite(total) || total <= 0) return "--"
-  return ((used / total) * 100).toFixed(1) + "%"
-}
-
-function fmtGpuMem(mb) {
-  if (!isFinite(mb) || mb <= 0) return "--"
-  return Math.round(mb) + " MiB"
-}
-
 function fmtMemShort(mb) {
   if (!isFinite(mb) || mb <= 0) return "-"
   if (mb >= 1024) return (mb / 1024).toFixed(1) + "G"
@@ -70,18 +60,6 @@ function fmtUptime(secs) {
   return out
 }
 
-function fmtPower(watts) {
-  if (!isFinite(watts) || watts <= 0) return "--"
-  if (watts >= 100) return Math.round(watts) + " W"
-  return watts.toFixed(1) + " W"
-}
-
-function fmtFreq(mhz) {
-  if (!isFinite(mhz) || mhz <= 0) return "--"
-  if (mhz >= 1000) return (mhz / 1000).toFixed(2) + " GHz"
-  return Math.round(mhz) + " MHz"
-}
-
 // ---- aggregator helpers (used by the bar-stats catalog) ----
 
 function netSumKbs(data, field) {
@@ -112,11 +90,6 @@ function batteryPct(data) {
 // The value functions return "--" when the stat isn't meaningful, which the
 // label builder drops so only live values are shown.
 
-// ---- bar-stats catalog: every readable stat that can be shown in the bar
-// icon label. Each entry returns a short one-token string for the label.
-// The value functions return "--" when the stat isn't meaningful, which the
-// label builder drops so only live values are shown.
-
 function barStatsCatalog() {
   return [
     { id: "cpu",      label: "CPU",       value: function(d) { return fmtPctShort(d ? d.cpu_pct : -1) } },
@@ -130,7 +103,7 @@ function barStatsCatalog() {
     { id: "ram",      label: "RAM",       value: function(d) { return fmtMemShort(d ? d.mem_used_mb : 0) } },
     { id: "rampct",   label: "RAM %",     value: function(d) { return d && d.mem_total_mb > 0 ? fmtPctShort(d.mem_used_mb / d.mem_total_mb * 100) : "--" } },
     { id: "swap",     label: "Swap",      value: function(d) { return fmtMemShort(d ? d.swap_used_mb : 0) } },
-    { id: "load",     label: "Load",      value: function(d) { return d ? d.load_1.toFixed(1) : "--" } },
+    { id: "load",     label: "Load",      value: function(d) { return d && isFinite(d.load_1) ? d.load_1.toFixed(1) : "--" } },
     { id: "dpct",     label: "Disk %",    value: function(d) { return fmtPctShort(topDiskPct(d)) } },
     { id: "down",     label: "Net ↓",     value: function(d) { var r = fmtRateShort(netSumKbs(d, "rx_kbs")); return r === "-" ? "0" : r } },
     { id: "up",       label: "Net ↑",     value: function(d) { var r = fmtRateShort(netSumKbs(d, "tx_kbs")); return r === "-" ? "0" : r } },
@@ -160,136 +133,6 @@ function barStatValue(data, id) {
 function barStatLabel(id) {
   var entry = barStatById(id)
   return entry ? entry.label : ""
-}
-
-// ---- Mission Center-style device info rows --------------------------------
-// Each builder returns [{label, value}] key/value pairs for the overview
-// dropdown cards. Values are already formatted for display.
-
-function gpuInfoRows(d) {
-  if (!d) return []
-  var rows = []
-  if (d.gpu_name) rows.push({ label: "Name", value: d.gpu_name })
-  if (d.gpu_driver) rows.push({ label: "Driver", value: d.gpu_driver })
-  rows.push({ label: "Utilization", value: fmtPct(d.gpu_pct) })
-  rows.push({ label: "Clock Speed",
-    value: fmtFreq(d.gpu_clock_mhz) + " / " + fmtFreq(d.gpu_graphics_max_mhz) })
-  rows.push({ label: "Power Draw",
-    value: fmtPowerNice(d.gpu_power_w) + " / " + fmtPowerNice(d.gpu_power_max_w) })
-  rows.push({ label: "Memory Usage",
-    value: fmtGpuMem(d.gpu_mem_mb) + " / " + fmtMemNice(d.gpu_mem_total_mb) })
-  rows.push({ label: "Memory Speed",
-    value: fmtFreq(d.gpu_mem_clock_mhz) + " / " + fmtFreq(d.gpu_mem_clock_max_mhz) })
-  rows.push({ label: "Video encode",
-    value: fmtPct(d.gpu_enc_pct !== undefined ? d.gpu_enc_pct : 0) })
-  rows.push({ label: "Video decode",
-    value: fmtPct(d.gpu_dec_pct !== undefined ? d.gpu_dec_pct : 0) })
-  rows.push({ label: "Temperature", value: fmtTemp(d.gpu_temp) })
-  rows.push({ label: "PCI Express speed",
-    value: "PCIe Gen " + (d.gpu_link_gen || 0) + " x" + (d.gpu_link_width || "?") })
-  rows.push({ label: "Max PCI Express speed",
-    value: "PCIe Gen " + (d.gpu_link_gen_max || 0) + " x" + (d.gpu_link_width_max || "?") })
-  if (d.gpu_bus) rows.push({ label: "PCI bus address", value: d.gpu_bus })
-  return rows
-}
-
-function cpuInfoRows(d) {
-  if (!d) return []
-  var rows = []
-  if (d.cpu_name) rows.push({ label: "Name", value: d.cpu_name })
-  rows.push({ label: "Utilization", value: fmtPct(d.cpu_pct) })
-  rows.push({ label: "Clock Speed",
-    value: fmtFreq(d.cpu_hz_mhz) + " / " + fmtFreq(d.cpu_max_mhz) })
-  if (d.cpu_cores > 0) rows.push({ label: "Cores",
-    value: d.cpu_cores + " / " + (d.cpu_threads || d.cpu_cores) + " threads" })
-  rows.push({ label: "Temperature", value: fmtTemp(d.cpu_temp) })
-  rows.push({ label: "Load (1m / 5m / 15m)",
-    value: (d.load_1 || 0).toFixed(2) + "  /  " + (d.load_5 || 0).toFixed(2) + "  /  " + (d.load_15 || 0).toFixed(2) })
-  return rows
-}
-
-function memInfoRows(d) {
-  if (!d) return []
-  var rows = []
-  rows.push({ label: "Total", value: fmtMemNice(d.mem_total_mb) })
-  rows.push({ label: "Used", value: fmtMem(d.mem_used_mb) + "  (" + fmtMemPct(d.mem_used_mb, d.mem_total_mb) + ")" })
-  rows.push({ label: "Available", value: fmtMem(d.mem_avail_mb) })
-  rows.push({ label: "Free", value: fmtMem(d.mem_free_mb) })
-  rows.push({ label: "Cached", value: fmtMem(d.mem_cached_mb) })
-  rows.push({ label: "Buffers", value: fmtMem(d.mem_buffers_mb) })
-  rows.push({ label: "Swap", value: fmtMem(d.swap_used_mb) + "  (" + fmtMemPct(d.swap_used_mb, d.swap_total_mb) + ")" })
-  return rows
-}
-
-function diskInfoRows(d) {
-  if (!d || !d.disks) return []
-  var rows = []
-  for (var i = 0; i < d.disks.length; i++) {
-    var disk = d.disks[i]
-    rows.push({ label: disk.mount + "  (" + disk.dev + ")",
-      value: disk.used_gb.toFixed(0) + "G / " + disk.size_gb.toFixed(0) + "G   ·   " + disk.pct.toFixed(0) + "%" })
-    rows.push({ label: "I/O",
-      value: "↓" + fmtRate(disk.read_kbs) + "   ↑" + fmtRate(disk.write_kbs) })
-  }
-  return rows
-}
-
-function netInfoRows(d) {
-  if (!d || !d.nets) return []
-  var rows = []
-  for (var i = 0; i < d.nets.length; i++) {
-    var n = d.nets[i]
-    if (n.rx_kbs === 0 && n.tx_kbs === 0) continue
-    rows.push({ label: n.iface,
-      value: "↓" + fmtRate(n.rx_kbs) + "   ↑" + fmtRate(n.tx_kbs) })
-  }
-  return rows
-}
-
-function sysInfoRows(d) {
-  if (!d) return []
-  var rows = []
-  if (d.os_pretty) rows.push({ label: "OS", value: d.os_pretty })
-  if (d.host) rows.push({ label: "Host", value: d.host })
-  if (d.kernel) rows.push({ label: "Kernel", value: d.kernel })
-  rows.push({ label: "Uptime", value: fmtUptime(d.uptime_s) })
-  rows.push({ label: "Processes", value: String(d.proc_count) })
-  return rows
-}
-
-function battInfoRows(d) {
-  if (!d || !d.battery || !d.battery.present) return []
-  var rows = []
-  var b = d.battery
-  if (b.model) rows.push({ label: "Model", value: b.model })
-  rows.push({ label: "Charge", value: b.percent + "%" })
-  if (b.status) rows.push({ label: "Status", value: b.status })
-  rows.push({ label: "Power", value: fmtPower(b.power_w) })
-  return rows
-}
-
-function deviceInfoRows(device, d) {
-  switch (device) {
-    case "cpu": return cpuInfoRows(d)
-    case "mem": return memInfoRows(d)
-    case "gpu": return gpuInfoRows(d)
-    case "disks": return diskInfoRows(d)
-    case "net": return netInfoRows(d)
-    case "sys": return sysInfoRows(d)
-    case "batt": return battInfoRows(d)
-  }
-  return []
-}
-
-function fmtPowerNice(w) {
-  if (!isFinite(w) || w <= 0) return "--"
-  return (w < 10 ? w.toFixed(2) : w.toFixed(1)) + " W"
-}
-
-function fmtMemNice(mb) {
-  if (!isFinite(mb) || mb <= 0) return "--"
-  if (mb >= 1024) return (mb / 1024).toFixed(2) + " GiB"
-  return Math.round(mb) + " MiB"
 }
 
 // ---- alert detection

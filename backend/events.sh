@@ -5,6 +5,9 @@ DATA_DIR="${OMCONTROL_DATA_DIR:-$HOME/.local/share/omcontrol}"
 DB="${OMCONTROL_DB:-$DATA_DIR/history.db}"
 ACTION="$1"
 LIMIT="${3:-200}"
+case "$LIMIT" in
+  ''|*[!0-9]*|0) echo "usage: events.sh list [--limit <positive integer>]" >&2; exit 1 ;;
+esac
 
 if [ "$ACTION" = "list" ]; then
   sqlite3 -cmd ".timeout 3000" "$DB" "

@@ -41,11 +41,12 @@ for dev in /dev/video0 /dev/video1 /dev/video2; do
   fi
 done
 
-# Microphone via pactl (active capture streams)
+# Microphone via pactl (active capture streams). The real OS pid lives in
+# application.process.id (a Client: line is only a PulseAudio client index).
 pactl list source-outputs 2>/dev/null | awk '
   /^Source Output #/ { if (pid && name) printf "microphone|%s|%s\n", pid, name; pid=""; name="" }
-  /Client:/ { gsub(/.*PID: /, ""); gsub(/[^0-9].*/, ""); pid=$0 }
-  /Application Name:/ { gsub(/.*: /, ""); gsub(/"/, "", $0); name=$0 }
+  /application\.process\.id/ { gsub(/^.* = "/, ""); gsub(/"/, "", $0); pid=$0 }
+  tolower($0) ~ /application name:/ { sub(/^[^:]*: */, ""); gsub(/"/, "", $0); name=$0 }
   END { if (pid && name) printf "microphone|%s|%s\n", pid, name }
 ' >> "$TMP"
 

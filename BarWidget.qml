@@ -112,7 +112,7 @@ BarWidget {
 
   function notify(headline, body, urgency) {
     if (!root.bar || !root.bar.run) return
-    var u = urgency || root.alertUrgency
+    var u = Util.shellQuote(urgency || root.alertUrgency)
     var appName = Util.shellQuote("OmaControl")
     var headlineQ = Util.shellQuote(headline)
     var bodyQ = body ? " " + Util.shellQuote(body) : ""
@@ -249,7 +249,7 @@ BarWidget {
   function saveBarPrefs() {
     var json = JSON.stringify({ stats: root.barStats, mode: root.barStatMode, barShowBell: root.barShowBell })
     var safe = json.replace(/'/g, "'\\''")
-    barStatsSaveProc.command = ["sh", "-c", "mkdir -p '" + root.dataDir + "' && printf '%s' '" + safe + "' > '" + root.barStatsPath + "'"]
+    barStatsSaveProc.command = ["sh", "-c", "mkdir -p '" + root.dataDir + "' && printf '%s' '" + safe + "' > '" + root.barStatsPath + ".tmp' && mv '" + root.barStatsPath + ".tmp' '" + root.barStatsPath + "'"]
     barStatsSaveProc.running = false
     barStatsSaveProc.running = true
   }
@@ -310,10 +310,10 @@ BarWidget {
     repeat: true
     triggeredOnStart: true
     onTriggered: {
-      root.refresh()
-      privacyProc.running = true
-      barStatsLoadProc.running = true
-      if (root.barShowBell) unreadProc.running = true
+      if (!collectProc.running) root.refresh()
+      if (!privacyProc.running) privacyProc.running = true
+      if (!barStatsLoadProc.running) barStatsLoadProc.running = true
+      if (root.barShowBell && !unreadProc.running) unreadProc.running = true
     }
   }
 
@@ -331,13 +331,14 @@ BarWidget {
     activeColor: root.alert ? (root.bar && root.bar.urgent ? root.bar.urgent : Color.urgent) : root.bellColor
     tooltipText: {
       if (!root.ready) return "OmaControl — loading..."
+      var d = root.lastData || {}
       var tip = "OmaControl\n"
-      tip += "CPU: " + Model.fmtPct(root.cpuPct) + "  " + Model.fmtTemp(root.cpuTemp) + "\n"
-      tip += "RAM: " + Model.fmtMem(root.lastData.mem_used_mb) + " / " + Model.fmtMem(root.lastData.mem_total_mb) + "\n"
-      tip += "GPU: " + Model.fmtPct(root.lastData.gpu_pct) + "  " + Model.fmtTemp(root.gpuTemp) + "\n"
-      tip += "Processes: " + root.lastData.proc_count
+      tip += "CPU: " + Model.fmtPct(d.cpu_pct) + "  " + Model.fmtTemp(d.cpu_temp) + "\n"
+      tip += "RAM: " + Model.fmtMem(d.mem_used_mb) + " / " + Model.fmtMem(d.mem_total_mb) + "\n"
+      tip += "GPU: " + Model.fmtPct(d.gpu_pct) + "  " + Model.fmtTemp(d.gpu_temp) + "\n"
+      tip += "Processes: " + d.proc_count
       if (root.privacyAlert) tip += "\n⚠ Privacy alert active"
-      if (root.alert) tip += "\n⚠ " + Model.alertReason(root.lastData)
+      if (root.alert) tip += "\n⚠ " + Model.alertReason(d)
       tip += "\n\nLeft: window • Middle: refresh • Right: menu"
       return tip
     }

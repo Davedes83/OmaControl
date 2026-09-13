@@ -7,13 +7,14 @@
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 I=0
 while true; do
-  sh "$SELF_DIR/backend/collect.sh" > /dev/null 2>&1
+  # timeout guard: a wedged collector must not stall the sampling loop forever
+  timeout 30 sh "$SELF_DIR/backend/collect.sh" > /dev/null 2>&1
   I=$((I + 1))
   if [ $((I % 3)) -eq 0 ]; then
-    sh "$SELF_DIR/backend/enforce.sh" > /dev/null 2>&1
+    timeout 15 sh "$SELF_DIR/backend/enforce.sh" > /dev/null 2>&1
   fi
   if [ $((I % 3)) -eq 0 ]; then
-    sh "$SELF_DIR/backend/privacy.sh" > /dev/null 2>&1
+    timeout 15 sh "$SELF_DIR/backend/privacy.sh" > /dev/null 2>&1
   fi
   sleep 2
 done
