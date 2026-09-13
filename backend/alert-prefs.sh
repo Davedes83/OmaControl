@@ -9,6 +9,7 @@
 DATA_DIR="${OMCONTROL_DATA_DIR:-$HOME/.local/share/omcontrol}"
 PREFS="${OMCONTROL_ALERT_PREFS:-$DATA_DIR/alert_prefs.json}"
 mkdir -p "$DATA_DIR"
+BACKEND="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 DEFAULT='{"enabled":true,"types":{"New App Launch":"toast","Mic or Cam Access":"notify","Service Change":"none","Unsigned App Launch":"notify","Location Tracking":"none","New Service Launch":"none","App Update":"notify","New Suspicious App":"notify","App Exit":"none"},"charts":{"App Exit":false}}'
 
@@ -16,25 +17,16 @@ if [ ! -f "$PREFS" ]; then
   echo "$DEFAULT" > "$PREFS"
 fi
 
-python3 - "$PREFS" "$@" <<'PY'
-import json, sys
+OMC_BACKEND="$BACKEND" python3 - "$PREFS" "$@" <<'PY'
+import json, os, sys
+
+sys.path.insert(0, os.environ["OMC_BACKEND"])
+from omc_prefs import normalize_mode
 
 p = sys.argv[1]
 ACTION = sys.argv[2] if len(sys.argv) > 2 else ""
 TYPE = sys.argv[3] if len(sys.argv) > 3 else ""
-VAL = (sys.argv[3] if len(sys.argv) > 3 else "") if sys.argv[2] == "set-enabled" else (sys.argv[4] if len(sys.argv) > 4 else "")
-
-# Legacy boolean files: true meant "notify" (but "toast" for New App Launch),
-# false meant "none".
-LEGACY_TOAST = {"New App Launch"}
-
-
-def normalize(v, t):
-    if v is True:
-        return "toast" if t in LEGACY_TOAST else "notify"
-    if v is False:
-        return "none"
-    return v if v in ("toast", "notify", "none") else "none"
+VAL = (sys.argv[3] if len(sys.argv) > 3 else "") if ACTION == "set-enabled" else (sys.argv[4] if len(sys.argv) > 4 else "")
 
 
 def load():
@@ -49,7 +41,7 @@ def load():
     d.setdefault("enabled", True)
     changed = False
     for t, v in list(d["types"].items()):
-        n = normalize(v, t)
+        n = normalize_mode(v, t)
         if n != v:
             d["types"][t] = n
             changed = True

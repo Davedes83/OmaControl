@@ -23,6 +23,8 @@ import os
 import sqlite3
 import sys
 
+from omc_prefs import normalize_mode
+
 DB = os.environ.get("OMCONTROL_DB") or os.path.expanduser(
     "~/.local/share/omcontrol/history.db")
 
@@ -99,11 +101,7 @@ def _alert_prefs():
 
 def alert_mode(sens, prefs):
     v = (prefs.get("types") or {}).get(sens)
-    if v is True:
-        return "toast" if sens == "New App Launch" else "notify"
-    if v is False:
-        return "none"
-    return v if v in ("toast", "notify", "none") else "none"
+    return normalize_mode(v, sens)
 
 
 def fire_toast(sens, body):

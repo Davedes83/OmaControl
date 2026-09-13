@@ -261,6 +261,15 @@ PanelWindow {
   }
 
   function eventTypeColor(kind) { return Model.eventTypeColor(kind) }
+  // Canvas2D can't alpha-blend the hex strings Model.js returns, so convert
+  // "#RRGGBB" → "rgba(r,g,b,a)" for translucent strokes.
+  function hexRgba(hex, alpha) {
+    var h = String(hex || "#888888").replace("#", "")
+    if (h.length < 6) h = "888888"
+    return "rgba(" + parseInt(h.substring(0, 2), 16) + ","
+        + parseInt(h.substring(2, 4), 16) + ","
+        + parseInt(h.substring(4, 6), 16) + "," + alpha + ")"
+  }
   function eventIcon(kind) { return Model.eventIcon(kind) }
   function eventKindLabel(kind) {
     if (kind === "app_launch" || kind === "new_app") return "Launch"
@@ -3981,17 +3990,6 @@ property real gpu: 0
 
     function resetView() { viewStart = -1; viewEnd = -1; requestPaint() }
 
-    function evColor(kind) {
-      if (kind === "app_launch" || kind === "new_app") return Qt.rgba(0.24, 0.7, 0.44, 1)
-      if (kind === "app_exit") return Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.85)
-      if (kind.indexOf("spike") >= 0) return hg.dangerColor
-      if (kind === "publisher_block" || kind === "unsigned_launch" || kind === "unknown_app"
-          || kind === "suspicious_app") return hg.dangerColor
-      if (kind === "mic_access" || kind === "cam_access" || kind === "location_access") return hg.dangerColor
-      if (kind.indexOf("user_") === 0) return hg.lineColor
-      return Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.7)
-    }
-
     function dataStart() { return hg.pts.length ? hg.pts[0].ts : 0 }
     function dataEnd() { return hg.pts.length ? hg.pts[hg.pts.length - 1].ts : 0 }
     function fullEnd() { return hg.dataEnd() }
@@ -4187,13 +4185,13 @@ property real gpu: 0
               break
             }
           }
-          var pinCol = hg.evColor(ev2.kind || ev2.type || "")
+          var pinCol = root.eventTypeColor(ev2.kind || ev2.type || "")
           // Faint vertical guide from the pin down to the interpolated curve
           // value (or the plot floor if the event predates the data).
           var pinBase = pinVal >= 0
               ? topPad + plotH - Math.max(0, Math.min(yMax, pinVal)) / yMax * plotH
               : topPad + plotH - 1
-          ctx.strokeStyle = Qt.rgba(pinCol.r, pinCol.g, pinCol.b, 0.22)
+          ctx.strokeStyle = root.hexRgba(pinCol, 0.22)
           ctx.lineWidth = 1
           ctx.beginPath()
           ctx.moveTo(pinX + 0.5, topPad + 11)
