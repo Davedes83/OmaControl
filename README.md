@@ -27,7 +27,7 @@ Add the widget to `~/.config/omarchy/shell.json`:
 {
   "bar": {
     "layout": {
-      "right": [{ "id": "davedes.omcontrol" }]
+      "right": [{ "id": "davedes.omacontrol" }]
     }
   }
 }
@@ -43,12 +43,12 @@ omarchy restart shell
 - **Middle-click** — refresh sample
 - **Right-click** — context menu (jump to tab, enforce rules, kill top process)
 
-Also ships a CLI: `omcontrol status`, `omcontrol top --history 30m`, `omcontrol app kill <name>`, and more — run `omcontrol --help` for the full list.
+Also ships a CLI: `omacontrol status`, `omacontrol top --history 30m`, `omacontrol app kill <name>`, and more — run `omacontrol --help` for the full list.
 
 ## Remove
 
 ```bash
-omarchy plugin remove davedes.omcontrol
+omarchy plugin remove davedes.omacontrol
 ```
 
 ## Requirements
