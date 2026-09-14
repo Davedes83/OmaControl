@@ -1,6 +1,6 @@
 <a href='https://ko-fi.com/O3N726LJT4' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi5.png?v=6' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
 
-<img width="1224" height="1285" alt="preview" src="https://github.com/user-attachments/assets/023e9517-991b-4c8e-8ba7-d10276d832d2" />
+<img width="1600" height="1120" alt="preview png" src="https://github.com/user-attachments/assets/df68baa0-a1b8-4d63-8e0e-78bf6dcaf091" />
 
 # OmaControl
 
