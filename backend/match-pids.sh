@@ -1,4 +1,6 @@
 #!/bin/sh
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$SELF_DIR/bootstrap.sh"
 # match-pids.sh <name> — print pids (one per line) whose process comm OR
 # resolved exe basename equals <name>.
 #

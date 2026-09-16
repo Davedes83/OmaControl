@@ -1,4 +1,6 @@
 #!/bin/sh
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$SELF_DIR/bootstrap.sh"
 # OmControl app-action — quick actions on a running app (by process name).
 # Usage: app-action.sh <action> <name>
 #   kill    -> SIGTERM all processes of this name (one-off)

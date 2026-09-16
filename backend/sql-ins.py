@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """OmControl parameterized SQL writer.
 
 Replaces hand-assembled `INSERT INTO events` / `INSERT INTO privacy_events`

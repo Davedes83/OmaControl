@@ -1,4 +1,6 @@
 #!/bin/sh
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$SELF_DIR/bootstrap.sh"
 # OmControl alert preferences — per-event-type notification mode + chart markers.
 # Modes: toast  = top-right desktop popup + bell badge
 #        notify = bell badge only

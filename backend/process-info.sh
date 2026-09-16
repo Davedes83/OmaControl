@@ -1,4 +1,6 @@
 #!/bin/sh
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$SELF_DIR/bootstrap.sh"
 # OmControl process info — given a process name, returns a human-readable description.
 # Usage: process-info.sh <process_name>
 

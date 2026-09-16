@@ -5,10 +5,11 @@
 # All rate meters (CPU, per-core CPU, disk IO, network) share one 0.2s
 # sampling window so the script stays cheap.
 
-DATA_DIR="${OMCONTROL_DATA_DIR:-$HOME/.local/share/omcontrol}"
-mkdir -p "$DATA_DIR"
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$SELF_DIR/bootstrap.sh"
+DATA_DIR="$OMCONTROL_DATA_DIR"
 DB="${OMCONTROL_DB:-$DATA_DIR/history.db}"
-NOW=$(date +%s)
+NOW=$(/usr/bin/date +%s)
 
 # Prune stale temp files from past invocations that got killed mid-run.
 find "$DATA_DIR" -maxdepth 1 -mmin +30 \
@@ -696,7 +697,10 @@ rm -f "$DATA_DIR/.cur_names.$$" "$DATA_DIR/.new_names.$$" "$DATA_DIR/.promote.$$
 # Prunes and metric-spike events are folded into the single sqlite3 call above.
 
 # --- Output JSON ---
-cat <<ENDJSON
+# Capped as a last resort: a malfunctioning producer must never be able to
+# retain unbounded output in the long-lived shell. 262 KB is far above the
+# ~10 KB this blob realistically reaches.
+{ cat <<ENDJSON
 {
   "cpu_pct": $CPU_PCT,
   "cores": $CORES,
@@ -761,3 +765,4 @@ cat <<ENDJSON
   "recent_apps": $RECENT_APPS
 }
 ENDJSON
+} | /usr/bin/head -c "${OMCONTROL_MAX_OUT_BYTES:-262144}" 2>/dev/null

@@ -30,7 +30,7 @@ Add the widget to `~/.config/omarchy/shell.json`:
 {
   "bar": {
     "layout": {
-      "right": [{ "id": "davedes.omacontrol" }]
+      "right": [{ "id": "davedes.omcontrol" }]
     }
   }
 }
@@ -39,6 +39,18 @@ Add the widget to `~/.config/omarchy/shell.json`:
 ```bash
 omarchy restart shell
 ```
+
+### Optional: background history sampler
+
+The bar widget and CLI record while the shell is running. To also fill history
+when the shell is closed, enable the hardened user service (fixed `PATH`,
+`LC_ALL=C`, strict umask, process-group timeouts on every helper):
+
+```bash
+systemctl --user enable --now ~/.config/omarchy/plugins/davedes.omcontrol/systemd/omcontrol-collect.service
+```
+
+Verify: `systemctl --user status omcontrol-collect` and `omacontrol status`.
 
 ## Usage
 
@@ -51,7 +63,8 @@ Also ships a CLI: `omacontrol status`, `omacontrol top --history 30m`, `omacontr
 ## Remove
 
 ```bash
-omarchy plugin remove davedes.omacontrol
+omarchy plugin remove davedes.omcontrol
+systemctl --user disable --now omcontrol-collect
 ```
 
 ## Requirements

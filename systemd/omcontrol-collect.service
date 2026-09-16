@@ -1,0 +1,22 @@
+[Unit]
+Description=OmControl continuous history sampler
+Documentation=omcontrol status/top/history
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.config/omarchy/plugins/davedes.omcontrol/omcontrol-poll.sh
+Environment=HOME=%h
+Environment=OMCONTROL_DATA_DIR=%h/.local/share/omcontrol
+# The sampler re-asserts its own sanitized environment (fixed root-owned PATH,
+# LC_ALL=C, strict umask, LD_* cleared) via backend/bootstrap.sh; these unit
+# settings make sure the same guarantees hold before the first script line.
+Environment="PATH=/usr/bin:/bin"
+Environment=LC_ALL=C
+UMask=0077
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

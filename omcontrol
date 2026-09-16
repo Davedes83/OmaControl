@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # OmControl CLI — query the historical task-manager database.
 #
 #   omcontrol status                 current sample + store summary
@@ -19,8 +19,9 @@
 # R accepts 5m/30m/1h/6h/24h/3d. M = cpu|mem|gpu|gtemp|ctemp. TS = epoch seconds.
 
 set -u
-DB="${OMCONTROL_DB:-$HOME/.local/share/omcontrol/history.db}"
 SNIPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SNIPS_DIR/backend/bootstrap.sh"
+DB="${OMCONTROL_DB:-$OMCONTROL_DATA_DIR/history.db}"
 
 usage() {
   sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^#   //; /^$/d'

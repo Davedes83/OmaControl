@@ -120,6 +120,23 @@ PanelWindow {
   readonly property string dataDir: Quickshell.env("HOME") + "/.local/share/omcontrol"
   readonly property string barStatsPath: dataDir + "/barstats.json"
 
+  // Hardened spawner: helpers run under a fixed absolute interpreter through
+  // the stdio-cap wrapper with a GNU timeout (own process group → group
+  // SIGTERM then SIGKILL grace) and an explicit minimal environment, so no
+  // inherited PATH/LD_* variable can influence or shadow the tooling.
+  readonly property string runnerPath: Qt.resolvedUrl("backend/run-capped.sh").toString().replace("file://", "")
+  readonly property int maxOutputBytes: 262144
+  readonly property var trustedEnv: ({
+    "PATH": "/usr/bin:/bin",
+    "HOME": Quickshell.env("HOME"),
+    "OMCONTROL_DATA_DIR": root.dataDir,
+    "LC_ALL": "C"
+  })
+  function capText(text) {
+    return typeof text === "string" && text.length > root.maxOutputBytes
+      ? text.slice(0, root.maxOutputBytes) : (text || "")
+  }
+
   readonly property var metricUnits: ({ cpu: "%", mem: "%", gpu: "%", procs: "", disk: "KB/s", net: "KB/s" })
   readonly property var sortOptions: [
     { v: "cpu", label: "CPU" },
@@ -556,7 +573,7 @@ PanelWindow {
   }
 
   function appAction(action, name) {
-    appActionProc.command = ["sh",
+    appActionProc.command = ["/usr/bin/timeout", "-k", "2", "8", "/bin/sh", root.runnerPath, "/bin/sh",
       Qt.resolvedUrl("backend/app-action.sh").toString().replace("file://", ""),
       action, name]
     appActionProc.running = true
@@ -565,14 +582,16 @@ PanelWindow {
   function loadStats(nm) {
     if (!nm) { root.detailStats = null; return }
     root.detailStatsBusy = true
-    statsProc.command = [Qt.resolvedUrl("backend/app-stats.sh").toString().replace("file://", ""), nm]
+    statsProc.command = ["/usr/bin/timeout", "-k", "2", "8", "/bin/sh", root.runnerPath, "/bin/sh",
+      Qt.resolvedUrl("backend/app-stats.sh").toString().replace("file://", ""), nm]
     statsProc.running = true
   }
 
   function loadEventContext(ev) {
     root.eventCtx = null
     root.eventCtxBusy = true
-    var args = [Qt.resolvedUrl("backend/event-context.sh").toString().replace("file://", ""),
+    var args = ["/usr/bin/timeout", "-k", "2", "8", "/bin/sh", root.runnerPath, "/bin/sh",
+                Qt.resolvedUrl("backend/event-context.sh").toString().replace("file://", ""),
                 "" + (ev && ev.ts ? ev.ts : 0), (ev && ev.app) || "", (ev && ev.kind) || ""]
     eventCtxProc.command = args
     eventCtxProc.running = true
@@ -620,20 +639,22 @@ PanelWindow {
   function saveBarPrefs() {
     var json = JSON.stringify({ stats: root.barPrefs.stats || [], mode: root.barPrefs.mode || "name", barShowBell: root.barPrefs.barShowBell !== false, showBuyButton: root.barPrefs.showBuyButton !== false })
     var safe = json.replace(/'/g, "'\\''")
-    barPrefsSaveProc.command = ["sh", "-c",
+    barPrefsSaveProc.command = ["/usr/bin/timeout", "-k", "2", "5", "/bin/sh", root.runnerPath, "/bin/sh", "-c",
       "mkdir -p '" + root.dataDir + "' && printf '%s' '" + safe + "' > '" + root.barStatsPath + "'"]
     barPrefsSaveProc.running = false
     barPrefsSaveProc.running = true
   }
   function loadBarPrefs() {
-    barPrefsLoadProc.command = ["sh", "-c", "cat '" + root.barStatsPath + "' 2>/dev/null || echo '{}'"]
+    barPrefsLoadProc.command = ["/usr/bin/timeout", "-k", "2", "5", "/bin/sh", root.runnerPath, "/bin/sh", "-c",
+      "cat '" + root.barStatsPath + "' 2>/dev/null || echo '{}'"]
     barPrefsLoadProc.running = true
   }
 
   function loadNet(nm) {
     if (!nm) { root.detailNet = null; return }
     root.detailNetBusy = true
-    netProc.command = [Qt.resolvedUrl("backend/app-net.sh").toString().replace("file://", ""), nm]
+    netProc.command = ["/usr/bin/timeout", "-k", "2", "8", "/bin/sh", root.runnerPath, "/bin/sh",
+      Qt.resolvedUrl("backend/app-net.sh").toString().replace("file://", ""), nm]
     netProc.running = true
   }
 
@@ -643,7 +664,8 @@ PanelWindow {
       return
     }
     root.procDetailBusy = true
-    procDetailProc.command = [Qt.resolvedUrl("backend/process-detail.sh").toString().replace("file://", ""), nm]
+    procDetailProc.command = ["/usr/bin/timeout", "-k", "2", "8", "/bin/sh", root.runnerPath, "/usr/bin/python3",
+      Qt.resolvedUrl("backend/process-detail.sh").toString().replace("file://", ""), nm]
     procDetailProc.running = true
   }
 
@@ -733,7 +755,8 @@ PanelWindow {
 
   // ---- persistence helpers (events read state + alert prefs) ----
   function runBackend(script, args) {
-    var full = ["sh", Qt.resolvedUrl("backend/" + script).toString().replace("file://", "")].concat(args)
+    var full = ["/usr/bin/timeout", "-k", "2", "8", "/bin/sh", root.runnerPath, "/bin/sh",
+                Qt.resolvedUrl("backend/" + script).toString().replace("file://", "")].concat(args)
     actionProc.command = full
     actionProc.running = true
   }
@@ -828,10 +851,13 @@ PanelWindow {
 
   Process {
     id: sampleProc
-    command: ["sh", Qt.resolvedUrl("backend/sample-json.sh").toString().replace("file://", "")]
+    clearEnvironment: true
+    environment: root.trustedEnv
+    command: ["/usr/bin/timeout", "-k", "2", "10", "/bin/sh", root.runnerPath, "/bin/sh",
+              Qt.resolvedUrl("backend/sample-json.sh").toString().replace("file://", "")]
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onSample(text)
+      onStreamFinished: root.onSample(root.capText(text))
     }
     onRunningChanged: {
       if (!running) {
@@ -843,15 +869,19 @@ PanelWindow {
 
   Process {
     id: appActionProc
+    clearEnvironment: true
+    environment: root.trustedEnv
   }
   Process {
     id: statsProc
+    clearEnvironment: true
+    environment: root.trustedEnv
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         root.detailStatsBusy = false
         try {
-          var parsed = JSON.parse(text)
+          var parsed = JSON.parse(root.capText(text))
           root.detailStats = parsed && parsed.name ? parsed : null
         } catch (e) { root.detailStats = null }
       }
@@ -859,12 +889,14 @@ PanelWindow {
   }
   Process {
     id: netProc
+    clearEnvironment: true
+    environment: root.trustedEnv
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         root.detailNetBusy = false
         try {
-          var parsed = JSON.parse(text)
+          var parsed = JSON.parse(root.capText(text))
           root.detailNet = parsed ? parsed : null
         } catch (e) { root.detailNet = null }
       }
@@ -872,12 +904,14 @@ PanelWindow {
   }
   Process {
     id: procDetailProc
+    clearEnvironment: true
+    environment: root.trustedEnv
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         root.procDetailBusy = false
         try {
-          var parsed = JSON.parse(text)
+          var parsed = JSON.parse(root.capText(text))
           root.procDetail = (parsed && parsed.pids) ? parsed.pids : []
         } catch (e) { root.procDetail = [] }
       }
@@ -885,12 +919,14 @@ PanelWindow {
   }
   Process {
     id: eventCtxProc
+    clearEnvironment: true
+    environment: root.trustedEnv
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         root.eventCtxBusy = false
         try {
-          var parsed = JSON.parse(text)
+          var parsed = JSON.parse(root.capText(text))
           root.eventCtx = (parsed && parsed.ok) ? parsed : null
         } catch (e) { root.eventCtx = null }
       }
@@ -898,11 +934,13 @@ PanelWindow {
   }
   Process {
     id: barPrefsLoadProc
+    clearEnvironment: true
+    environment: root.trustedEnv
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         try {
-          var parsed = JSON.parse(text)
+          var parsed = JSON.parse(root.capText(text))
           if (Array.isArray(parsed)) root.barPrefs = { stats: parsed, mode: root.barPrefs.mode || "name" }
           else if (parsed && parsed.stats) root.barPrefs = { stats: parsed.stats, mode: ["name","none"].indexOf(parsed.mode) >= 0 ? parsed.mode : "name" }
           root.barPrefs = { stats: root.barPrefs.stats || [], mode: root.barPrefs.mode || "name", barShowBell: parsed.barShowBell !== false, showBuyButton: parsed.showBuyButton !== false }
@@ -911,8 +949,16 @@ PanelWindow {
       }
     }
   }
-  Process { id: barPrefsSaveProc }
-  Process { id: actionProc }
+  Process {
+    id: barPrefsSaveProc
+    clearEnvironment: true
+    environment: root.trustedEnv
+  }
+  Process {
+    id: actionProc
+    clearEnvironment: true
+    environment: root.trustedEnv
+  }
   Timer { id: refreshTimer; interval: 5000; repeat: false; running: false
     onTriggered: { if (root.open) sampleProc.running = true }
   }

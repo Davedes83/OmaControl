@@ -187,13 +187,38 @@ BarWidget {
     }
   }
 
+  // ---- Hardened spawner -----------------------------------------------------
+  // Every external helper is launched through a GNU coreutils timeout (own
+  // process group → group-level SIGTERM then SIGKILL after a 2s grace, giving
+  // hard deadlines + reaping), the stdio-cap wrapper, a fixed absolute
+  // interpreter, and an explicit minimal environment. Nothing inherited from
+  // the shell's environment (user PATH, LD_*, locale) can influence the
+  // collector or let a shadow executable be resolved.
+  readonly property string dataDir: Quickshell.env("HOME") + "/.local/share/omcontrol"
+  readonly property string barStatsPath: dataDir + "/barstats.json"
+  readonly property string runnerPath: Qt.resolvedUrl("backend/run-capped.sh").toString().replace("file://", "")
+  readonly property int maxOutputBytes: 262144
+  readonly property var trustedEnv: ({
+    "PATH": "/usr/bin:/bin",
+    "HOME": Quickshell.env("HOME"),
+    "OMCONTROL_DATA_DIR": dataDir,
+    "LC_ALL": "C"
+  })
+  function capText(text) {
+    return typeof text === "string" && text.length > root.maxOutputBytes
+      ? text.slice(0, root.maxOutputBytes) : (text || "")
+  }
+
   Process {
     id: collectProc
-    command: ["sh", Qt.resolvedUrl("backend/collect.sh").toString().replace("file://", "")]
+    clearEnvironment: true
+    environment: root.trustedEnv
+    command: ["/usr/bin/timeout", "-k", "2", "10", "/bin/sh", root.runnerPath, "/bin/sh",
+              Qt.resolvedUrl("backend/collect.sh").toString().replace("file://", "")]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var data = Model.parseCollect(text)
+        var data = Model.parseCollect(root.capText(text))
         if (data) {
           root.lastData = data
           root.lastError = ""
@@ -207,33 +232,39 @@ BarWidget {
 
   Process {
     id: enforceProc
-    command: ["sh", Qt.resolvedUrl("backend/enforce.sh").toString().replace("file://", "")]
+    clearEnvironment: true
+    environment: root.trustedEnv
+    command: ["/usr/bin/timeout", "-k", "2", "8", "/bin/sh", root.runnerPath, "/bin/sh",
+              Qt.resolvedUrl("backend/enforce.sh").toString().replace("file://", "")]
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onEnforce(text)
+      onStreamFinished: root.onEnforce(root.capText(text))
     }
   }
 
   Process {
     id: privacyProc
-    command: ["sh", Qt.resolvedUrl("backend/privacy.sh").toString().replace("file://", "")]
+    clearEnvironment: true
+    environment: root.trustedEnv
+    command: ["/usr/bin/timeout", "-k", "2", "8", "/bin/sh", root.runnerPath, "/bin/sh",
+              Qt.resolvedUrl("backend/privacy.sh").toString().replace("file://", "")]
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onPrivacy(text)
+      onStreamFinished: root.onPrivacy(root.capText(text))
     }
   }
 
-  readonly property string dataDir: Quickshell.env("HOME") + "/.local/share/omcontrol"
-  readonly property string barStatsPath: dataDir + "/barstats.json"
-
   Process {
     id: barStatsLoadProc
-    command: ["sh", "-c", "cat '" + root.barStatsPath + "' 2>/dev/null || true"]
+    clearEnvironment: true
+    environment: root.trustedEnv
+    command: ["/usr/bin/timeout", "-k", "2", "5", "/bin/sh", root.runnerPath, "/bin/sh", "-c",
+              "cat '" + root.barStatsPath + "' 2>/dev/null || true"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         try {
-          var parsed = JSON.parse(text)
+          var parsed = JSON.parse(root.capText(text))
           if (parsed && parsed.barShowBell !== undefined) root.barShowBell = parsed.barShowBell === true
           if (Array.isArray(parsed)) {
             root.barStats = parsed
@@ -249,7 +280,8 @@ BarWidget {
   function saveBarPrefs() {
     var json = JSON.stringify({ stats: root.barStats, mode: root.barStatMode, barShowBell: root.barShowBell })
     var safe = json.replace(/'/g, "'\\''")
-    barStatsSaveProc.command = ["sh", "-c", "mkdir -p '" + root.dataDir + "' && printf '%s' '" + safe + "' > '" + root.barStatsPath + ".tmp' && mv '" + root.barStatsPath + ".tmp' '" + root.barStatsPath + "'"]
+    barStatsSaveProc.command = ["/usr/bin/timeout", "-k", "2", "5", "/bin/sh", root.runnerPath, "/bin/sh", "-c",
+      "mkdir -p '" + root.dataDir + "' && printf '%s' '" + safe + "' > '" + root.barStatsPath + ".tmp' && mv '" + root.barStatsPath + ".tmp' '" + root.barStatsPath + "'"]
     barStatsSaveProc.running = false
     barStatsSaveProc.running = true
   }
@@ -268,6 +300,8 @@ BarWidget {
 
   Process {
     id: barStatsSaveProc
+    clearEnvironment: true
+    environment: root.trustedEnv
     running: false
   }
 
@@ -288,12 +322,15 @@ BarWidget {
 
   Process {
     id: unreadProc
-    command: ["sh", Qt.resolvedUrl("backend/unread.sh").toString().replace("file://", "")]
+    clearEnvironment: true
+    environment: root.trustedEnv
+    command: ["/usr/bin/timeout", "-k", "2", "8", "/bin/sh", root.runnerPath, "/bin/sh",
+              Qt.resolvedUrl("backend/unread.sh").toString().replace("file://", "")]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         try {
-          var d = JSON.parse(text)
+          var d = JSON.parse(root.capText(text))
           root.unreadCount = d && d.count ? Number(d.count) : 0
           root.bellColorToken = d && d.color ? String(d.color) : "dim"
         } catch (e) {

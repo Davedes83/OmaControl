@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """OmControl per-process network attribution for the chart drill-down.
 
 Runs `ss -tinp` and keeps a cumulative-byte baseline per socket-owning PID

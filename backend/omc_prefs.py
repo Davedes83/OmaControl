@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """OmControl shared alert-prefs helpers.
 
 The legacy boolean prefs files (true meant "notify", but "toast" for New App

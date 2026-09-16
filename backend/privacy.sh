@@ -1,4 +1,6 @@
 #!/bin/sh
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$SELF_DIR/bootstrap.sh"
 # OmControl privacy monitor — checks for active webcam/mic/location usage.
 # Logs start/stop events into an append-only history for the Privacy tab.
 # Outputs JSON: {"devices":[...], "events":[...]}

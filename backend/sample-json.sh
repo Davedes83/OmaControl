@@ -4,7 +4,9 @@
 # list (publisher/verified/permissions/disabled), persistent events log,
 # current-run permission badges, and alert-sensitivity preferences.
 
-DATA_DIR="${OMCONTROL_DATA_DIR:-$HOME/.local/share/omcontrol}"
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$SELF_DIR/bootstrap.sh"
+DATA_DIR="$OMCONTROL_DATA_DIR"
 DB="${OMCONTROL_DB:-$DATA_DIR/history.db}"
 RULES="${OMCONTROL_RULES:-$DATA_DIR/rules.json}"
 
@@ -136,7 +138,10 @@ else
 fi
 
 export OMC_DB="$DB" OMC_NOW="$NOW" OMC_DISABLED="$DISABLED" OMC_PREFS="$ALERT_PREFS"
-H1="$H1" H6="$H6" H1D="$H1D" CPU="$CPU" MEM="$MEM" GPU="$GPU" PROCS="$PROCS" DISK="$DISK" DISK_R="$DISK_R" DISK_W="$DISK_W" RX="$RX_KBS" TX="$TX_KBS" CTEMP="$CTEMP" GTEMP="$GTEMP" python3 - "$DB" <<'PY'
+# Final payload is piped through a hard byte cap as a last resort; a runaway
+# producer must never be able to retain unbounded output in the long-lived
+# shell. Real payloads are far smaller than the 256 KB ceiling.
+{ H1="$H1" H6="$H6" H1D="$H1D" CPU="$CPU" MEM="$MEM" GPU="$GPU" PROCS="$PROCS" DISK="$DISK" DISK_R="$DISK_R" DISK_W="$DISK_W" RX="$RX_KBS" TX="$TX_KBS" CTEMP="$CTEMP" GTEMP="$GTEMP" python3 - "$DB" <<'PY'
 import json, os, sqlite3, sys, time
 from collections import defaultdict
 
@@ -363,3 +368,4 @@ print(json.dumps({
     "perms": {k: v for k, v in perms.items()},
 }))
 PY
+} | /usr/bin/head -c "${OMCONTROL_MAX_OUT_BYTES:-262144}" 2>/dev/null
