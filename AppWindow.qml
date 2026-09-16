@@ -125,7 +125,7 @@ PanelWindow {
   // SIGTERM then SIGKILL grace) and an explicit minimal environment, so no
   // inherited PATH/LD_* variable can influence or shadow the tooling.
   readonly property string runnerPath: Qt.resolvedUrl("backend/run-capped.sh").toString().replace("file://", "")
-  readonly property int maxOutputBytes: 262144
+  readonly property int maxOutputBytes: 1048576
   readonly property var trustedEnv: ({
     "PATH": "/usr/bin:/bin",
     "HOME": Quickshell.env("HOME"),

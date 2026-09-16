@@ -197,7 +197,7 @@ BarWidget {
   readonly property string dataDir: Quickshell.env("HOME") + "/.local/share/omcontrol"
   readonly property string barStatsPath: dataDir + "/barstats.json"
   readonly property string runnerPath: Qt.resolvedUrl("backend/run-capped.sh").toString().replace("file://", "")
-  readonly property int maxOutputBytes: 262144
+  readonly property int maxOutputBytes: 1048576
   readonly property var trustedEnv: ({
     "PATH": "/usr/bin:/bin",
     "HOME": Quickshell.env("HOME"),

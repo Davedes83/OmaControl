@@ -765,4 +765,4 @@ rm -f "$DATA_DIR/.cur_names.$$" "$DATA_DIR/.new_names.$$" "$DATA_DIR/.promote.$$
   "recent_apps": $RECENT_APPS
 }
 ENDJSON
-} | /usr/bin/head -c "${OMCONTROL_MAX_OUT_BYTES:-262144}" 2>/dev/null
+} | /usr/bin/head -c "${OMCONTROL_MAX_OUT_BYTES:-1048576}" 2>/dev/null

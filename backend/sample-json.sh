@@ -368,4 +368,4 @@ print(json.dumps({
     "perms": {k: v for k, v in perms.items()},
 }))
 PY
-} | /usr/bin/head -c "${OMCONTROL_MAX_OUT_BYTES:-262144}" 2>/dev/null
+} | /usr/bin/head -c "${OMCONTROL_MAX_OUT_BYTES:-1048576}" 2>/dev/null

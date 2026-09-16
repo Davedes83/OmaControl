@@ -22,3 +22,10 @@ unset LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH LD_LIBRARY_PATH_64 \
 : "${OMCONTROL_DATA_DIR:=$HOME/.local/share/omcontrol}"
 export OMCONTROL_DATA_DIR
 mkdir -p "$OMCONTROL_DATA_DIR" 2>/dev/null || true
+
+# Hard ceiling for any helper's stdout, applied by run-capped.sh and by the
+# producers themselves. Payloads are element-bounded (fixed count/window
+# limits), well under this in practice; the cap bounds worst-case retention
+# in the long-lived shell if a producer ever runs away.
+: "${OMCONTROL_MAX_OUT_BYTES:=1048576}"
+export OMCONTROL_MAX_OUT_BYTES
