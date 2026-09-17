@@ -41,7 +41,11 @@ BarWidget {
   // ---- stale-data indicator: lastData.ts is stamped by collect.sh; when the
   // data stops arriving (>15s with no fresh sample) the label switches to a
   // warning glyph and the poll fan throttles down until fresh data returns.
-  readonly property int sampleAge: ready ? Math.floor(Date.now() / 1000) - (root.lastData.ts || 0) : -1
+  // Date.now() is NOT a QML dependency, so a binding on it would freeze once
+  // lastData stops changing and stale could never fire. clockSec is a real
+  // reactive dependency, advanced every second by the clock timer below.
+  property int clockSec: Math.floor(Date.now() / 1000)
+  readonly property int sampleAge: ready ? Math.max(0, root.clockSec - Number(root.lastData.ts || 0)) : -1
   readonly property bool stale: ready && sampleAge > 15
   property int pollMs: 2000
   function recomputePoll() {
@@ -362,6 +366,15 @@ Process {
         }
       }
     }
+  }
+
+  Timer {
+    id: clockTimer
+    interval: 1000
+    running: true
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.clockSec = Math.floor(Date.now() / 1000)
   }
 
   Timer {
