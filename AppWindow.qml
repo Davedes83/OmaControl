@@ -117,6 +117,7 @@ PanelWindow {
 
   property var barPrefs: ({ stats: ["cpu", "cputemp"], mode: "name" })
   property bool barPrefsLoaded: false
+  property bool perProcNet: true
   readonly property string dataDir: Quickshell.env("HOME") + "/.local/share/omcontrol"
   readonly property string barStatsPath: dataDir + "/barstats.json"
 
@@ -165,11 +166,14 @@ PanelWindow {
     return out
   }
 
-  // The 8 alert sensitivities for the Alerts config tab (display order).
+  // The 9 alert sensitivities for the Alerts config tab (display order).
+  // "App Activity" is the privacy-sensitive tier: it gates the runtime
+  // process-level alerts that reveal which specific process is spiky — set it
+  // to "none" to stop the app window from naming processes on screen.
   readonly property var alertTypes: [
     "New App Launch", "Mic or Cam Access", "Service Change", "Unsigned App Launch",
     "Location Tracking", "New Service Launch", "App Update", "New Suspicious App",
-    "App Exit"
+    "App Exit", "App Activity"
   ]
 
   function liveValue(key) {
@@ -515,6 +519,7 @@ PanelWindow {
     var out = []
     for (var i = 0; i < src.length; i++) {
       var a = src[i]
+      if (a.priv === true && root.alertMode("App Activity") === "none") continue
       if (f === "critical" && a.severity !== "critical") continue
       if (f === "info" && a.severity !== "info") continue
       if (root.dismissedAlerts.indexOf(a.kind + "|" + a.ts + "|" + a.msg) >= 0) continue
@@ -559,7 +564,9 @@ PanelWindow {
     var alerts = root.sample.alerts || []
     var crit = 0
     for (var i = 0; i < alerts.length; i++) {
-      if (alerts[i].severity === "critical") crit++
+      if (alerts[i].severity !== "critical") continue
+      if (alerts[i].priv === true && root.alertMode("App Activity") === "none") continue
+      crit++
     }
     root.alertBadge = alertsOn ? crit : 0
     var ev = root.sample.events || []
@@ -649,6 +656,20 @@ PanelWindow {
     barPrefsLoadProc.command = ["/usr/bin/timeout", "-k", "2", "5", "/bin/sh", root.runnerPath, "/usr/bin/python3",
                                 root.prefsPath, "read"]
     barPrefsLoadProc.running = true
+  }
+  function loadPerProcNet() {
+    metricsPrefsLoadProc.command = ["/usr/bin/timeout", "-k", "2", "5", "/bin/sh", root.runnerPath, "/usr/bin/python3",
+                                    root.prefsPath, "read", root.dataDir + "/metrics_prefs.json"]
+    metricsPrefsLoadProc.running = true
+  }
+  function setPerProcNet(on) {
+    root.perProcNet = !!on
+    var payload = JSON.stringify({ perProcNet: root.perProcNet })
+    metricsPrefsSaveProc.command = ["/usr/bin/timeout", "-k", "2", "5", "/bin/sh", root.runnerPath, "/usr/bin/python3",
+                                    root.prefsPath, "write", root.dataDir + "/metrics_prefs.json"]
+    metricsPrefsSaveProc.pending = payload
+    metricsPrefsSaveProc.running = false
+    metricsPrefsSaveProc.running = true
   }
 
   function loadNet(nm) {
@@ -794,6 +815,7 @@ PanelWindow {
   // Handles legacy boolean prefs (true meant notify, but toast for new apps).
   function alertMode(type) {
     var v = (root.alertPrefs.types || {})[type]
+    if (type === "App Activity" && v === undefined) return "notify"
     if (v === true) return type === "New App Launch" ? "toast" : "notify"
     if (v === false) return "none"
     if (v === "toast" || v === "notify" || v === "none") return v
@@ -966,6 +988,35 @@ PanelWindow {
     }
   }
   Process {
+    id: metricsPrefsLoadProc
+    clearEnvironment: true
+    environment: root.trustedEnv
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var p = JSON.parse(root.capText(text))
+          root.perProcNet = p.perProcNet !== false
+        } catch (e) {}
+      }
+    }
+  }
+  Process {
+    id: metricsPrefsSaveProc
+    clearEnvironment: true
+    environment: root.trustedEnv
+    stdinEnabled: true
+    property string pending: ""
+    onStarted: {
+      if (metricsPrefsSaveProc.pending !== "") metricsPrefsSaveProc.write(metricsPrefsSaveProc.pending)
+      metricsPrefsSaveProc.stdinEnabled = false
+    }
+    onExited: function(exitCode, exitStatus) {
+      if (metricsPrefsSaveProc.stdinEnabled === false) metricsPrefsSaveProc.stdinEnabled = true
+      metricsPrefsSaveProc.pending = ""
+    }
+  }
+  Process {
     id: actionProc
     clearEnvironment: true
     environment: root.trustedEnv
@@ -993,7 +1044,10 @@ PanelWindow {
   onActiveTabChanged: {
     if (root.activeTab === 2) root.alertsSeenTs = Math.floor(Date.now() / 1000)
     if (root.activeTab === 3) root.eventSeenTs = Math.floor(Date.now() / 1000)
-    if (root.activeTab === 4 && !root.barPrefsLoaded) root.loadBarPrefs()
+    if (root.activeTab === 4 && !root.barPrefsLoaded) {
+      root.loadBarPrefs()
+      root.loadPerProcNet()
+    }
     root.updateBadges()
   }
 
@@ -2214,6 +2268,55 @@ instances: Number(modelData.instances) || 1
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: root.setBarShowBell(root.barPrefs.barShowBell === false)
+                  }
+                }
+              }
+            }
+
+            Rectangle {
+              width: parent.width
+              height: Style.space(42)
+              radius: Style.space(12)
+              color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.07)
+              Row {
+                anchors.fill: parent
+                anchors.margins: Style.space(8)
+                spacing: Style.space(8)
+                Text {
+                  text: "\uf0ac"
+                  color: root.perProcNet ? root.accent : root.dim1
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.body
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+                Text {
+                  width: parent.width - Style.space(70)
+                  elide: Text.ElideRight
+                  text: "Per-process network attribution in charts"
+                  color: root.fg
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+                Rectangle {
+                  width: Style.space(46); height: Style.space(22); radius: Style.space(11)
+                  border.width: 1
+                  border.color: root.perProcNet ? root.accent : root.dim1
+                  color: (netHover.containsMouse || root.perProcNet) ? root.accentSoft : "transparent"
+                  Text {
+                    anchors.centerIn: parent
+                    text: root.perProcNet ? "ON" : "OFF"
+                    color: root.perProcNet ? root.accent : root.dim1
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
+                  MouseArea {
+                    id: netHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.setPerProcNet(!root.perProcNet)
                   }
                 }
               }

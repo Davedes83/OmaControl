@@ -33,14 +33,18 @@ esc() {
 # --- Toast notifications are fired from sql-ins.py (single choke point),
 #     which reads alert_prefs.json itself; nothing here needs the file. ---
 
-# --- One-time schema bootstrap. Marker file keeps this off the hot path:
-#     previously these CREATE/ALTER statements ran sqlite3 5x on every tick.
-#     The column check is a self-heal: if a migration was interrupted by a
-#     transient lock (mark set but columns missing), it re-runs instead of
-#     leaving the INSERT/roll queries broken. ---
-SCHEMA_MARK="${DB}.schema_mark_v4"
-HAS_DISK_COLS=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM pragma_table_info('metrics') WHERE name IN ('disk_io','disk_r','disk_w');" 2>/dev/null)
-if [ ! -f "$SCHEMA_MARK" ] || [ "$HAS_DISK_COLS" != "3" ]; then
+# --- One-time schema bootstrap, versioned via PRAGMA user_version. The
+#     marker-file approach could drift (stale mark + missing columns after an
+#     interrupted migration); user_version is authoritative and idempotent.
+#     Each step only touches what the version says is missing, so fresh and
+#     legacy DBs converge on the same shape. Runners: the main CREATE/ALTER
+#     ladder lives here (single sqlite call per tick when stale). ---
+SCHEMA_VERSION=5
+SCHEMA_UV=$(sqlite3 -cmd ".timeout 1500" "$DB" "PRAGMA user_version;" 2>/dev/null)
+if [ -z "$SCHEMA_UV" ]; then
+  SCHEMA_UV=0
+fi
+if [ "$SCHEMA_UV" -lt 1 ]; then
   sqlite3 -cmd ".timeout 1500" "$DB" <<'SQL' 2>/dev/null
 CREATE TABLE IF NOT EXISTS metrics (
   ts INTEGER PRIMARY KEY,
@@ -76,18 +80,29 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 SQL
-  # Legacy DBs predate the disk/net columns; add them if missing.
-  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_pct REAL;" 2>/dev/null || true
-  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_io REAL;" 2>/dev/null || true
-  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_r REAL;" 2>/dev/null || true
-  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_w REAL;" 2>/dev/null || true
-  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_rx_bytes INTEGER;" 2>/dev/null || true
-  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_tx_bytes INTEGER;" 2>/dev/null || true
-  # Only mark the migration complete once the columns actually exist, so a
-  # failed/healed-already DB keeps retrying instead of wedging permanently.
-  if [ "$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM pragma_table_info('metrics') WHERE name IN ('disk_io','disk_r','disk_w');" 2>/dev/null)" = "3" ]; then
-    touch "$SCHEMA_MARK"
+fi
+# Legacy DBs predate the disk/net columns; add each only when actually
+# missing (self-healing: an interrupted upgrade just retries next tick).
+if [ "$SCHEMA_UV" -lt 4 ]; then
+  HAS_DISK_COLS=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM pragma_table_info('metrics') WHERE name IN ('disk_io','disk_r','disk_w');" 2>/dev/null)
+  if [ "$HAS_DISK_COLS" != "3" ]; then
+    sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_pct REAL;" 2>/dev/null || true
+    sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_io REAL;" 2>/dev/null || true
+    sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_r REAL;" 2>/dev/null || true
+    sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_w REAL;" 2>/dev/null || true
   fi
+  HAS_NET_COLS=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM pragma_table_info('metrics') WHERE name IN ('net_rx_bytes','net_tx_bytes');" 2>/dev/null)
+  if [ "$HAS_NET_COLS" != "2" ]; then
+    sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_rx_bytes INTEGER;" 2>/dev/null || true
+    sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_tx_bytes INTEGER;" 2>/dev/null || true
+  fi
+  sqlite3 -cmd ".timeout 1500" "$DB" "PRAGMA user_version = 4;" 2>/dev/null
+fi
+# Bump to the current schema version once the previous steps converged, and
+# drop the legacy marker so future readers never see it as authoritative.
+if [ "$SCHEMA_UV" -lt "$SCHEMA_VERSION" ]; then
+  sqlite3 -cmd ".timeout 1500" "$DB" "PRAGMA user_version = $SCHEMA_VERSION;" 2>/dev/null
+  rm -f "${DB}.schema_mark_v4"
 fi
 
 # One-time WAL switch (persistent per-DB): readers (sample-json, rollups,
@@ -378,10 +393,17 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     GPU_CLOCK=$(echo "$GPU_LINE" | awk -F',' '{gsub(/ /,"",$7); print $7}')
     GPU_ENC=$(echo "$GPU_LINE" | awk -F',' '{gsub(/ /,"",$8); print $8}')
     GPU_DEC=$(echo "$GPU_LINE" | awk -F',' '{gsub(/ /,"",$9); print $9}')
-    # One -q -x dump per tick; also reused by the GPU process map below.
-    GPUXML="$D/.omc_gpuxml.$$"
-    TMPFILES="$TMPFILES $GPUXML"
-    timeout 10 nvidia-smi -q -x 2>/dev/null > "$GPUXML"
+    # Tiered cadence: the utilization query above already ran for this tick;
+    # the full -q -x dump (identity + clocks + the process-map input) is
+    # expensive, so it's kept in a cache file refreshed at most once a minute
+    # and reused on every tick in between.
+    GPUXML="$D/.omc_gpuxml_cache"
+    if [ ! -f "$GPUXML" ] || [ -n "$(find "$GPUXML" -mmin +1 2>/dev/null)" ]; then
+      GPUXML_TMP="$D/.omc_gpuxml_cache.tmp.$$"
+      TMPFILES="$TMPFILES $GPUXML_TMP"
+      timeout 10 nvidia-smi -q -x 2>/dev/null > "$GPUXML_TMP"
+      [ -s "$GPUXML_TMP" ] && mv "$GPUXML_TMP" "$GPUXML"
+    fi
     if [ -s "$GPUXML" ]; then
       GPU_NAME=$(sed -n '0,/<product_name>/s/.*<product_name>\([^<]*\)<\/product_name>.*/\1/p' "$GPUXML")
       GPU_DRIVER=$(sed -n '0,/<driver_version>/s/.*<driver_version>\([^<]*\)<\/driver_version>.*/\1/p' "$GPUXML")
@@ -484,12 +506,11 @@ TMPFILES="$TMPFILES $GPU_PROC_MAP"
 : > "$GPU_PROC_MAP"
 # nvidia-smi only lists compute contexts via --query-compute-apps (usually
 # empty), so parse the XML process table which includes graphical processes.
-# Reuses the -q -x dump written by the GPU block above (one smi XML per tick).
+# Reuses the cached once-per-minute -q -x dump from the GPU block above; no
+# extra nvidia-smi call here.
 if command -v nvidia-smi >/dev/null 2>&1; then
-  if [ -z "$GPUXML" ] || [ ! -s "$GPUXML" ]; then
-    GPUXML="$D/.omc_gpuxml.$$"
-    TMPFILES="$TMPFILES $GPUXML"
-    timeout 10 nvidia-smi -q -x 2>/dev/null > "$GPUXML"
+  if [ -z "$GPUXML" ]; then
+    GPUXML="$D/.omc_gpuxml_cache"
   fi
   [ -s "$GPUXML" ] && awk '
     /<process_info>/ { inproc=1 }
@@ -556,12 +577,24 @@ PROC_MIN=$((NOW / 60))
 LAST_PROCMIN=$(cat "$DATA_DIR/.omc_proc_min" 2>/dev/null || echo 0)
 if [ "$PROC_MIN" -gt "$LAST_PROCMIN" ]; then
   PROC_TS=$((PROC_MIN * 60))
+  PER_PROC_NET="1"
+  if [ -f "$DATA_DIR/metrics_prefs.json" ] && \
+     grep -q '"perProcNet"[[:space:]]*:[[:space:]]*\(false\|0\)' "$DATA_DIR/metrics_prefs.json" 2>/dev/null; then
+    PER_PROC_NET="0"
+  fi
   # Per-process network KB/s for this minute (ss-based, like the netspeed
   # widget). Merged into the snapshot so the chart drill-down can show who
   # drove a network spike; bandwidth-only pids are appended to the CPU list.
+  # Disabled via the "per-process network" toggle (metrics_prefs.json): the
+  # ss dump is skipped and entries keep no nr/nt fields (the UI then hides
+  # the per-proc net column entirely instead of showing zeroes).
   NETPROCS_FILE="$D/.omc_netprocs.$$"
   TMPFILES="$TMPFILES $NETPROCS_FILE"
-  OMCONTROL_DATA_DIR="$DATA_DIR" python3 "$(dirname "$0")/net-procs.py" > "$NETPROCS_FILE" 2>/dev/null
+  if [ "$PER_PROC_NET" = "1" ]; then
+    OMCONTROL_DATA_DIR="$DATA_DIR" python3 "$(dirname "$0")/net-procs.py" > "$NETPROCS_FILE" 2>/dev/null
+  else
+    : > "$NETPROCS_FILE"
+  fi
   PROC_JSON=$(PROCS_RAW="$PROCS" OMC_NETPROCS="$NETPROCS_FILE" python3 - <<'PY'
 import json, os, sys
 raw = os.environ.get("PROCS_RAW", "").strip()
@@ -574,6 +607,9 @@ try:
     procs = json.loads("[" + raw + "]") if raw else []
 except Exception:
     procs = []
+if not net:
+    print(json.dumps(procs))
+    sys.exit()
 netmap = {}
 for e in net:
     netmap[str(e.get("pid"))] = e

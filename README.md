@@ -17,6 +17,10 @@ An Omarchy shell plugin (Quickshell, Hyprland) that turns your top-bar icon into
 - **Privacy alerts** — notified when camera, mic, or location get used
 - **Process control** — kill, suspend/resume, renice, or permanently disable an app
 - **Historical database** — SQLite-backed samples every 2s, downsampled over time
+- **Sustained alert hysteresis** — resource alarms must hold across samples and stay latched for a grace window, so the bell doesn't flicker near a threshold
+- **Privacy-tier alerts** — process-level spikes are toggleable via the "App Activity" sensitivity, so the window can stop naming specific processes
+- **Per-process network attribution** — optional toggle; turning it off hides the per-process net column entirely (instead of showing zeroes)
+- **Adaptive sampling + stale indicator** — the bar back-off when idle and warns when fresh data stops arriving
 
 ## Installation
 

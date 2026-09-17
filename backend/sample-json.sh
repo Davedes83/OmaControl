@@ -283,29 +283,101 @@ for nm, m in sorted(meta.items()):
 catalog.sort(key=lambda x: (not x["running"], x["name"].lower()))
 catalog = catalog[:150]
 
-# ---- alerts: resource thresholds + runaway processes
+# ---- alerts: resource thresholds (sustained + debounce) + runaway processes.
+# Hysteresis: a resource alert needs the latest sample over threshold AND at
+# least 2 of the last 3 samples over it (a single-tick spike is ignored), and
+# once raised it holds for a grace window so the bell/badge doesn't flicker as
+# the load hovers around the threshold. State persists across calls in
+# .alert_state.json (atomic tmp+rename, never a torn read).
 alerts = []
-def alert(kind, severity, msg, ts):
-    alerts.append({"kind": kind, "severity": severity, "msg": msg, "ts": ts})
+state_path = os.path.join(os.path.dirname(sys.argv[1]), ".alert_state.json")
+try:
+    state = json.load(open(state_path))
+except Exception:
+    state = {}
 
-mrow = con.execute("SELECT ts, cpu_pct, mem_used_mb, mem_total_mb, gpu_pct FROM metrics "
-                   "ORDER BY ts DESC LIMIT 1").fetchone()
-if mrow:
-    mts, acpu, amem_mb, amem_tot, agpu = mrow
-    amem = amem_mb * 100.0 / (amem_tot or 1)
-    if amem >= 85:
-        alert("memory", "critical", f"Memory at {round(amem)}%", mts)
-    if (acpu or 0) >= 90:
-        alert("cpu", "critical", f"CPU peaked at {round(acpu)}%", mts)
-    if (agpu or 0) >= 80:
-        alert("gpu", "warning", f"GPU usage at {round(agpu)}%", mts)
-last_ts = snaps[-1]["ts"] if snaps else (mrow[0] if mrow else NOW)
+def sustained(fn):
+    over = 0
+    for r in mrows:
+        if fn(r):
+            over += 1
+    return over >= 2 and bool(mrows) and fn(mrows[0])
+
+def update_alert(kind, firing, severity, msg, ts, priv=False, hold=90):
+    st = state.get(kind, {})
+    on = bool(st.get("on"))
+    since = st.get("since")
+    last_msg = st.get("msg", "")
+    if firing:
+        if not on or not since:
+            since = ts
+        on = True
+        last_msg = msg
+    elif on:
+        age = NOW - (since or ts)
+        if age < 0 or age >= hold:
+            on = False
+    if on and (msg or not any(a["kind"] == kind for a in alerts)) and \
+            not any(a["kind"] == kind and a["msg"] == (msg or last_msg) for a in alerts):
+        alerts.append({"kind": kind, "severity": severity, "msg": msg or last_msg,
+                       "ts": since or ts, "priv": priv})
+    state[kind] = {"on": on}
+    if since is not None:
+        state[kind]["since"] = since
+    state[kind]["msg"] = last_msg
+
+mrows = con.execute("SELECT ts, cpu_pct, mem_used_mb, mem_total_mb, gpu_pct FROM metrics "
+                    "ORDER BY ts DESC LIMIT 3").fetchall()
+
+def mem_fn(r):
+    return r[2] * 100.0 / (r[3] or 1) >= 85
+
+def cpu_fn(r):
+    return (r[1] or 0) >= 90
+
+def gpu_fn(r):
+    return (r[4] or 0) >= 80
+
+if mrows:
+    amem = mrows[0][2] * 100.0 / (mrows[0][3] or 1)
+    if sustained(mem_fn):
+        update_alert("memory", True, "critical", "Memory at %s%%" % round(amem), mrows[0][0])
+    else:
+        update_alert("memory", False, "critical", "Memory at %s%%" % round(amem), mrows[0][0])
+    if sustained(cpu_fn):
+        update_alert("cpu", True, "critical", "CPU peaked at %s%%" % round(mrows[0][1] or 0), mrows[0][0])
+    else:
+        update_alert("cpu", False, "critical", "CPU peaked at %s%%" % round(mrows[0][1] or 0), mrows[0][0])
+    if sustained(gpu_fn):
+        update_alert("gpu", True, "warning", "GPU usage at %s%%" % round(mrows[0][4] or 0), mrows[0][0])
+    else:
+        update_alert("gpu", False, "warning", "GPU usage at %s%%" % round(mrows[0][4] or 0), mrows[0][0])
+last_ts = snaps[-1]["ts"] if snaps else (mrows[0][0] if mrows else NOW)
 for p in p_list:
-    if (p.get("cpu") or 0) >= 80:
-        alert("proc", "critical", f"{p.get('name') or 'unknown'} at {round(p.get('cpu'), 1)}% CPU", last_ts)
-    elif (p.get("mem") or 0) >= 30:
-        alert("proc", "info", f"{p.get('name') or 'unknown'} using {round(p.get('mem'), 1)}% of memory", last_ts)
+    run = p.get("cpu") or 0
+    if run >= 80:
+        nm = p.get("name") or "unknown"
+        known = mnorm.get(norm(nm), {}).get("publisher") not in ("", "Unknown", None)
+        msg = "%s at %s%% CPU" % (nm, round(run, 1)) if known else "A process is using %s%% CPU" % round(run, 1)
+        update_alert("proc_cpu", True, "critical", msg, last_ts, priv=True)
+    else:
+        update_alert("proc_cpu", False, "critical", "", last_ts, priv=True)
+    run_mem = p.get("mem") or 0
+    if run_mem >= 30:
+        nm = p.get("name") or "unknown"
+        known = mnorm.get(norm(nm), {}).get("publisher") not in ("", "Unknown", None)
+        msg = "%s using %s%% of memory" % (nm, round(run_mem, 1)) if known else "A process is using %s%% of memory" % round(run_mem, 1)
+        update_alert("proc_mem", True, "info", msg, last_ts, priv=True)
+    else:
+        update_alert("proc_mem", False, "info", "", last_ts, priv=True)
 alerts = alerts[:16]
+try:
+    tmp_path = state_path + ".tmp." + str(os.getpid())
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+    os.replace(tmp_path, state_path)
+except Exception:
+    pass
 
 # ---- events: persistent log (events table) merged with privacy history.
 events = []

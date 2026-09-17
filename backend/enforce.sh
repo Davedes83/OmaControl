@@ -64,9 +64,10 @@ log_block() {
 TMP=$(mktemp /tmp/omc_rules.XXXXXX)
 KFILE=$(mktemp /tmp/omc_killed.XXXXXX)
 EFILE=$(mktemp /tmp/omc_errors.XXXXXX)
+PFILE=$(mktemp /tmp/omc_pfile.XXXXXX)
 CUR_MASKED=$(mktemp /tmp/omc_masked.XXXXXX)
 MSVC_LIST="$DATA_DIR/masked_services"
-trap 'rm -f "$TMP" "$KFILE" "$EFILE" "$LFILE" "$CUR_MASKED"' EXIT INT TERM
+trap 'rm -f "$TMP" "$KFILE" "$EFILE" "$LFILE" "$PFILE" "$CUR_MASKED"' EXIT INT TERM
 
 python3 - "$RULES_FILE" > "$TMP" <<'PY'
 import json, sys
@@ -109,10 +110,11 @@ grep -v '^$' "$TMP" | sed 's/\r$//' | while IFS='|' read -r kind action pattern;
   if [ -z "$DRY_RUN" ]; then
     # Match on comm AND the full resolved exe basename (comm is truncated to
     # 15 chars; match-pids.sh closes that gap by also matching readlink exe).
+    # Deliberately no pgrep -f fallback: a command-line regex match can hit
+    # unrelated processes whose argv merely contains the pattern string.
     PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$pattern")
-    [ -z "$PIDS" ] && PIDS=$(pgrep -f "$pattern" 2>/dev/null)
-    # Drop our own pid so a pattern that matches the enforcement tooling (or
-    # anything in its own command line) can never made us kill ourselves.
+    # Drop our own pid so a pattern that matches the enforcement tooling can
+    # never make us kill ourselves.
     PIDS=$(echo "$PIDS" | grep -vx "$$" | sort -un)
   else
     PIDS=""
@@ -122,19 +124,28 @@ grep -v '^$' "$TMP" | sed 's/\r$//' | while IFS='|' read -r kind action pattern;
     [ -z "$pid" ] && continue
     NAME=$(basename "$(readlink /proc/$pid/exe 2>/dev/null)" 2>/dev/null)
     NAME=${NAME:-unknown}
-    RESULT=0
-    if [ -z "$DRY_RUN" ]; then
-      kill -9 "$pid" 2>/dev/null
-      RESULT=$?
-      log_block "$pid" "$NAME" "$pattern"
-    fi
-    if [ "$RESULT" -eq 0 ]; then
-      printf '%s\n' "{\"pid\":$pid,\"name\":\"$NAME\",\"pattern\":\"$pattern\"}" >> "$KFILE"
-    else
-      printf '%s\n' "{\"pid\":$pid,\"name\":\"$NAME\",\"error\":\"kill failed\"}" >> "$EFILE"
-    fi
+    PAT=$(printf '%s' "$pattern" | tr -d '\n\r|')
+    printf '%s|%s|%s\n' "$pid" "$(echo "$NAME" | tr -d '\n\r|')" "$PAT" >> "$PFILE"
   done
 done
+
+# Reap collected app-match targets with a SIGTERM grace before SIGKILL:
+# a well-behaved app exits on TERM (a user kill, a rule, whatever), and only
+# survivors after the grace get the SIGKILL. The killed set is reported once.
+if [ -z "$DRY_RUN" ] && [ -s "$PFILE" ]; then
+  while IFS='|' read -r pid name pat; do
+    [ -z "$pid" ] && continue
+    kill -TERM "$pid" 2>/dev/null
+  done < "$PFILE"
+  sleep 1
+  while IFS='|' read -r pid name pat; do
+    [ -z "$pid" ] && continue
+    [ -d "/proc/$pid" ] || continue
+    kill -KILL "$pid" 2>/dev/null
+    log_block "$pid" "$name" "$pat"
+    printf '%s\n' "{\"pid\":$pid,\"name\":\"$name\",\"pattern\":\"$pat\"}" >> "$KFILE"
+  done < "$PFILE"
+fi
 
 # Unmask services whose disable rule vanished (or was disabled): the mask is
 # persistent, so without this an enable/rule removal would never take effect.

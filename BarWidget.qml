@@ -38,13 +38,26 @@ BarWidget {
   readonly property int gpuTemp: ready ? lastData.gpu_temp : 0
   readonly property bool alert: ready ? Model.hasAlert(lastData) || privacyAlert : false
 
+  // ---- stale-data indicator: lastData.ts is stamped by collect.sh; when the
+  // data stops arriving (>15s with no fresh sample) the label switches to a
+  // warning glyph and the poll fan throttles down until fresh data returns.
+  readonly property int sampleAge: ready ? Math.floor(Date.now() / 1000) - (root.lastData.ts || 0) : -1
+  readonly property bool stale: ready && sampleAge > 15
+  property int pollMs: 2000
+  function recomputePoll() {
+    var target = root.stale ? 6000
+              : (root.lastData && root.lastData.cpu_pct !== undefined && root.lastData.cpu_pct < 15) ? 5000
+              : 2000
+    if (target !== root.pollMs) root.pollMs = target
+  }
+
   // Toasts for new apps / privacy access are the single choke point in
   // backend/sql-ins.py (gated by alert_prefs.json modes). The bar only flags.
   readonly property string alertUrgency: root.setting("alertUrgency", "normal")
 
   readonly property string label: {
     if (!ready) return "󰍛 ..."
-    var icon = alert ? "󰀨 " : "󰍛 "
+    var icon = (alert || stale) ? "\uf071 " : "󰍛 "
     var parts = []
     var list = root.barStats || []
     for (var i = 0; i < list.length; i++) {
@@ -352,11 +365,12 @@ Process {
   }
 
   Timer {
-    interval: 2000
+    interval: root.pollMs
     running: true
     repeat: true
     triggeredOnStart: true
     onTriggered: {
+      root.recomputePoll()
       if (!collectProc.running) root.refresh()
       if (!privacyProc.running) privacyProc.running = true
       if (!barStatsLoadProc.running) barStatsLoadProc.running = true
@@ -374,8 +388,8 @@ Process {
     bar: root.bar
     text: root.label
     fontSize: Style.font.caption
-    active: root.alert || root.bellActive
-    activeColor: root.alert ? (root.bar && root.bar.urgent ? root.bar.urgent : Color.urgent) : root.bellColor
+    active: root.alert || root.bellActive || root.stale
+    activeColor: (root.alert || root.stale) ? (root.bar && root.bar.urgent ? root.bar.urgent : Color.urgent) : root.bellColor
     tooltipText: {
       if (!root.ready) return "OmaControl — loading..."
       var d = root.lastData || {}
@@ -384,6 +398,7 @@ Process {
       tip += "RAM: " + Model.fmtMem(d.mem_used_mb) + " / " + Model.fmtMem(d.mem_total_mb) + "\n"
       tip += "GPU: " + Model.fmtPct(d.gpu_pct) + "  " + Model.fmtTemp(d.gpu_temp) + "\n"
       tip += "Processes: " + d.proc_count
+      if (root.stale) tip += "\n⚠ No fresh data (" + root.sampleAge + "s ago)"
       if (root.privacyAlert) tip += "\n⚠ Privacy alert active"
       if (root.alert) tip += "\n⚠ " + Model.alertReason(d)
       tip += "\n\nLeft: window • Middle: refresh • Right: menu"

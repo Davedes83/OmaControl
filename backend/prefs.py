@@ -7,10 +7,11 @@ preference file shared by the bar widget and the app window. Both components
 overwrite a newer in-memory state and a torn write can never be observed.
 
 Usage:
-  prefs.py read     # dump current JSON to stdout ({} if absent/unreadable)
-  prefs.py write    # read JSON on stdin, validate, replace atomically
+  prefs.py read [path]     # dump current JSON to stdout ({} if absent)
+  prefs.py write [path]    # read JSON on stdin, validate, replace atomically
 
-Path: $OMCONTROL_BAR_PREFS (default $OMCONTROL_DATA_DIR/barstats.json)
+Path: optional positional [path] wins, else $OMCONTROL_BAR_PREFS, else
+      $OMCONTROL_DATA_DIR/barstats.json
 Lock: <path>.lock, flock(2) — shared on read, exclusive on write.
 """
 import fcntl
@@ -23,6 +24,8 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 def pref_path():
+    if len(sys.argv) > 2 and sys.argv[2]:
+        return sys.argv[2]
     p = os.environ.get("OMCONTROL_BAR_PREFS")
     if p:
         return p
@@ -60,7 +63,7 @@ def schema_ok(d):
                 return False
     if "mode" in d and d["mode"] not in ("name", "none"):
         return False
-    for k in ("barShowBell", "showBuyButton"):
+    for k in ("barShowBell", "showBuyButton", "perProcNet"):
         if k in d and not isinstance(d[k], (bool, int)):
             return False
     return True

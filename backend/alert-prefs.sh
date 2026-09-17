@@ -13,7 +13,7 @@ PREFS="${OMCONTROL_ALERT_PREFS:-$DATA_DIR/alert_prefs.json}"
 mkdir -p "$DATA_DIR"
 BACKEND="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
-DEFAULT='{"enabled":true,"types":{"New App Launch":"toast","Mic or Cam Access":"notify","Service Change":"none","Unsigned App Launch":"notify","Location Tracking":"none","New Service Launch":"none","App Update":"notify","New Suspicious App":"notify","App Exit":"none"},"charts":{"App Exit":false}}'
+DEFAULT='{"enabled":true,"types":{"New App Launch":"toast","Mic or Cam Access":"notify","Service Change":"none","Unsigned App Launch":"notify","Location Tracking":"none","New Service Launch":"none","App Update":"notify","New Suspicious App":"notify","App Exit":"none","App Activity":"notify"},"charts":{"App Exit":false}}'
 
 if [ ! -f "$PREFS" ]; then
   echo "$DEFAULT" > "$PREFS"
