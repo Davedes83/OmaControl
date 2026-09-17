@@ -104,7 +104,8 @@ NET_L=$(sqlite3 -cmd ".timeout 3000" "$DB" "SELECT ts, COALESCE(net_rx_bytes,0),
 RX_KBS=0
 TX_KBS=0
 OLD_IFS=$IFS
-IFS=$'| \n'
+IFS='| 
+'
 set -- $NET_L
 IFS=$OLD_IFS
 T2=$1
