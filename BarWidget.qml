@@ -316,7 +316,7 @@ BarWidget {
     root.saveBarPrefs()
   }
 
-Process {
+  Process {
     id: barStatsSaveProc
     clearEnvironment: true
     environment: root.trustedEnv

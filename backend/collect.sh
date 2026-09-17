@@ -90,20 +90,21 @@ if [ "$SCHEMA_UV" -lt 1 ]; then
   bootstrap_tables
 fi
 
-# Always converge on the full required column set, no matter what version the
-# DB claims. The previous logic could bump user_version to 5 before a repair
-# actually landed, so DBs may exist that are marked current yet still missing
-# columns; gating repairs on the version left those broken permanently. All
-# six ALTERs ignore errors, so re-running them against existing columns is
-# harmless — only the version bump stays gated on a verified schema.
+# Always converge on the complete schema, no matter what version the DB
+# claims. The previous logic could bump user_version to 5 before a migration
+# actually landed, so DBs may exist that are marked current yet still broken;
+# gating repairs on the version left those broken permanently. All repairs are
+# idempotent (errors ignored), so they re-run until the schema verifies — only
+# the version bump stays gated on a fully-verified state.
+REQUIRED_SCHEMA=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT (SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('metrics','proc_history','app_meta','events')) + (SELECT count(*) FROM sqlite_master WHERE type='index' AND name IN ('idx_metrics_ts','idx_proc_history_ts','idx_events_ts') AND sql IS NOT NULL);" 2>/dev/null)
+if [ "${REQUIRED_SCHEMA:-0}" != "7" ]; then
+  # A damaged DB can be missing the base tables or their indexes (a
+  # version-marked DB is no proof they exist); recreate everything that is
+  # missing — CREATE IF NOT EXISTS leaves existing tables untouched.
+  bootstrap_tables
+fi
 REQUIRED_COLS=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM pragma_table_info('metrics') WHERE name IN ('disk_pct','disk_io','disk_r','disk_w','net_rx_bytes','net_tx_bytes');" 2>/dev/null)
 if [ "${REQUIRED_COLS:-0}" != "6" ]; then
-  # A version-marked DB can also be missing the metrics table entirely;
-  # recreate the base tables (idempotent) so the repairs have a target.
-  HAS_METRICS=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='metrics';" 2>/dev/null)
-  if [ "${HAS_METRICS:-0}" = "0" ]; then
-    bootstrap_tables
-  fi
   sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_pct REAL;" 2>/dev/null || true
   sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_io REAL;" 2>/dev/null || true
   sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_r REAL;" 2>/dev/null || true

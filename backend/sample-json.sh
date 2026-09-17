@@ -262,7 +262,6 @@ apps = apps[:60]
 
 # ---- catalog: known apps (previously seen in app_meta) for the Apps inventory
 running_names = {norm(p.get("name")) for p in p_list0}
-installed = 0
 catalog = []
 for nm, m in sorted(meta.items()):
     if m.get("publisher") in ("Unknown", "") or m.get("source") in (""):
@@ -279,7 +278,6 @@ for nm, m in sorted(meta.items()):
     inst["running"] = norm(nm) in running_names
     inst["perms"] = perms.get(nm, [])
     catalog.append(inst)
-    installed += 1
 catalog.sort(key=lambda x: (not x["running"], x["name"].lower()))
 catalog = catalog[:150]
 
@@ -416,7 +414,6 @@ try:
     lastread = int(open(os.path.join(os.path.dirname(sys.argv[1]), "events_lastread_ts")).read().strip())
 except Exception:
     pass
-evmap = {"start": None, "stop": None}
 try:
     for row in con.execute(
             "SELECT id, ts, type, app, publisher, msg, read FROM events ORDER BY id DESC LIMIT 200"):

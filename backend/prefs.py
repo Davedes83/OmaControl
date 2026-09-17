@@ -20,8 +20,6 @@ import os
 import sys
 import tempfile
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-
 
 def pref_path():
     if len(sys.argv) > 2 and sys.argv[2]:
