@@ -125,6 +125,7 @@ PanelWindow {
   // SIGTERM then SIGKILL grace) and an explicit minimal environment, so no
   // inherited PATH/LD_* variable can influence or shadow the tooling.
   readonly property string runnerPath: Qt.resolvedUrl("backend/run-capped.sh").toString().replace("file://", "")
+  readonly property string prefsPath: Qt.resolvedUrl("backend/prefs.py").toString().replace("file://", "")
   readonly property int maxOutputBytes: 1048576
   readonly property var trustedEnv: ({
     "PATH": "/usr/bin:/bin",
@@ -637,16 +638,16 @@ PanelWindow {
     Qt.openUrlExternally("https://ko-fi.com/davedes")
   }
   function saveBarPrefs() {
-    var json = JSON.stringify({ stats: root.barPrefs.stats || [], mode: root.barPrefs.mode || "name", barShowBell: root.barPrefs.barShowBell !== false, showBuyButton: root.barPrefs.showBuyButton !== false })
-    var safe = json.replace(/'/g, "'\\''")
-    barPrefsSaveProc.command = ["/usr/bin/timeout", "-k", "2", "5", "/bin/sh", root.runnerPath, "/bin/sh", "-c",
-      "mkdir -p '" + root.dataDir + "' && printf '%s' '" + safe + "' > '" + root.barStatsPath + "'"]
+    var payload = JSON.stringify({ stats: root.barPrefs.stats || [], mode: root.barPrefs.mode || "name", barShowBell: root.barPrefs.barShowBell !== false, showBuyButton: root.barPrefs.showBuyButton !== false })
+    barPrefsSaveProc.command = ["/usr/bin/timeout", "-k", "2", "5", "/bin/sh", root.runnerPath, "/usr/bin/python3",
+                                root.prefsPath, "write"]
+    barPrefsSaveProc.pending = payload
     barPrefsSaveProc.running = false
     barPrefsSaveProc.running = true
   }
   function loadBarPrefs() {
-    barPrefsLoadProc.command = ["/usr/bin/timeout", "-k", "2", "5", "/bin/sh", root.runnerPath, "/bin/sh", "-c",
-      "cat '" + root.barStatsPath + "' 2>/dev/null || echo '{}'"]
+    barPrefsLoadProc.command = ["/usr/bin/timeout", "-k", "2", "5", "/bin/sh", root.runnerPath, "/usr/bin/python3",
+                                root.prefsPath, "read"]
     barPrefsLoadProc.running = true
   }
 
@@ -953,6 +954,16 @@ PanelWindow {
     id: barPrefsSaveProc
     clearEnvironment: true
     environment: root.trustedEnv
+    stdinEnabled: true
+    property string pending: ""
+    onStarted: {
+      if (barPrefsSaveProc.pending !== "") barPrefsSaveProc.write(barPrefsSaveProc.pending)
+      barPrefsSaveProc.stdinEnabled = false
+    }
+    onExited: function(exitCode, exitStatus) {
+      if (barPrefsSaveProc.stdinEnabled === false) barPrefsSaveProc.stdinEnabled = true
+      barPrefsSaveProc.pending = ""
+    }
   }
   Process {
     id: actionProc

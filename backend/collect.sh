@@ -111,7 +111,7 @@ PS_FILE="$D/.omc_ps.$$"
 PROC_IO_PRE="$D/.omc_proc_io_pre.$$"
 PROC_IO_POST="$D/.omc_proc_io_post.$$"
 PROC_SWAP="$D/.omc_proc_swap.$$"
-TMPFILES="$CPU_PRE $CPU_POST $DS_PRE $DS_POST $NET_CUR $NET_STATE_NEW $DISKIO $DF_FILE $PS_FILE $PROC_IO_PRE $PROC_IO_POST $PROC_SWAP $DATA_DIR/.cur_names.$$ $DATA_DIR/.new_names.$$ $DATA_DIR/.promote.$$ $DATA_DIR/.fresh.$$ $DATA_DIR/.seen.$$"
+TMPFILES="$CPU_PRE $CPU_POST $DS_PRE $DS_POST $NET_CUR $NET_STATE_NEW $DISKIO $DF_FILE $PS_FILE $PROC_IO_PRE $PROC_IO_POST $PROC_SWAP $DATA_DIR/.cur_names.$$ $DATA_DIR/.new_names.$$ $DATA_DIR/.promote.$$ $DATA_DIR/.fresh.$$ $DATA_DIR/.seen.$$ $DATA_DIR/.seen.sorted.$$ $DATA_DIR/.cand.sorted.$$"
 trap 'rm -f -- $TMPFILES' EXIT INT TERM
 
 # --- Top 20 processes by CPU (snapshot once; used for per-proc IO + swap) ---
@@ -640,9 +640,11 @@ done | \
   grep -vE '^(sh|bash|zsh|dash|fish|ps|pgrep|grep|awk|sed|sleep|cat|head|tail|true|false|tee|sort|uniq|comm|notify-send|omarchy-notification-send|xargs|find|rm|cp|mv|mkdir|dirname|basename|timeout|kworker.*|kthreadd|ksoftirqd|kswapd|kcompactd|khugepaged|kblockd|kdevtmpfs|khelper|writeback|jbd2|kcryptd|dmcrypt_write|oom_reaper|migration|watchdog|cpuhp|rcu|scsi_|usb_|irq/|ata_|xfs-|btrfs-|flush-|events_unbound|netns|kauditd|systemd-udevd)$' | \
   sort | uniq > "$DATA_DIR/.cur_names.$$"
 
-comm -23 "$DATA_DIR/.cur_names.$$" <(sort "$SEEN_FILE") > "$DATA_DIR/.new_names.$$"
-comm -12 "$DATA_DIR/.new_names.$$" <(sort "$CAND_FILE") > "$DATA_DIR/.promote.$$"
-comm -23 "$DATA_DIR/.new_names.$$" <(sort "$CAND_FILE") > "$DATA_DIR/.fresh.$$"
+sort "$SEEN_FILE" > "$DATA_DIR/.seen.sorted.$$"
+sort "$CAND_FILE" > "$DATA_DIR/.cand.sorted.$$"
+comm -23 "$DATA_DIR/.cur_names.$$" "$DATA_DIR/.seen.sorted.$$" > "$DATA_DIR/.new_names.$$"
+comm -12 "$DATA_DIR/.new_names.$$" "$DATA_DIR/.cand.sorted.$$" > "$DATA_DIR/.promote.$$"
+comm -23 "$DATA_DIR/.new_names.$$" "$DATA_DIR/.cand.sorted.$$" > "$DATA_DIR/.fresh.$$"
 
 NEW_APPS="[]"
 if [ -s "$DATA_DIR/.promote.$$" ]; then

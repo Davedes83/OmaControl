@@ -14,6 +14,36 @@ NOW=$(date +%s)
 DRY_RUN=""
 [ "$1" = "--dry-run" ] && DRY_RUN=1
 
+# Reject anything that isn't a plain user unit name: no absolute/relative paths,
+# no leading dot, no whitespace or shell metacharacters, no glob patterns, and
+# only the character set systemd allows in unit names ([A-Za-z0-9_.@:-]), ending
+# in ".service". A JIT'd rule string is never worth trusting systemctl to parse.
+valid_unit() {
+  case "$1" in
+    *.service) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    .*) return 1 ;;
+    */*) return 1 ;;
+    *[!A-Za-z0-9_.@:-]*) return 1 ;;
+  esac
+  return 0
+}
+
+# Mask/unmask only ever run after valid_unit() — a persisted rule must be a
+# legitimate unit name before it can affect the systemd user manager.
+mask_unit() {
+  valid_unit "$1" || return 1
+  systemctl --user mask "$1" >/dev/null 2>&1
+  systemctl --user stop "$1" >/dev/null 2>&1
+}
+unmask_unit() {
+  valid_unit "$1" || return 1
+  systemctl --user unmask "$1" >/dev/null 2>&1
+  systemctl --user restart "$1" >/dev/null 2>&1
+}
+
 if [ ! -f "$RULES_FILE" ]; then
   echo '{"killed":[],"errors":[]}'
   exit 0
@@ -61,12 +91,18 @@ grep -v '^$' "$TMP" | sed 's/\r$//' | while IFS='|' read -r kind action pattern;
   if [ "$kind" = "service" ]; then
     # Track every unit this run asks to mask so we can un-mask the ones whose
     # rule went away — a mask once applied must not outlive the rule.
-    if [ -z "$DRY_RUN" ]; then
-      systemctl --user mask "$pattern" >/dev/null 2>&1
-      systemctl --user stop "$pattern" >/dev/null 2>&1
-      echo "$pattern" >> "$CUR_MASKED"
+    if valid_unit "$pattern"; then
+      # Status before masking, surfaced in the caller's JSON so the reviewer
+      # can see exactly which unit was affected and in what state.
+      STATE=$(systemctl --user is-active "$pattern" 2>/dev/null || echo unknown)
+      if [ -z "$DRY_RUN" ]; then
+        mask_unit "$pattern"
+        echo "$pattern" >> "$CUR_MASKED"
+      fi
+      printf '%s\n' "{\"unit\":\"$pattern\",\"masked\":\"yes\",\"state\":\"$STATE\"}" >> "$KFILE"
+    else
+      printf '%s\n' "{\"unit\":\"$pattern\",\"error\":\"invalid unit name\"}" >> "$EFILE"
     fi
-    printf '%s\n' "{\"unit\":\"$pattern\",\"masked\":\"yes\"}" >> "$KFILE"
     continue
   fi
 
@@ -102,18 +138,24 @@ done
 
 # Unmask services whose disable rule vanished (or was disabled): the mask is
 # persistent, so without this an enable/rule removal would never take effect.
+# Every unit here is a legitimate-name from the tracked mask list (or a prior
+# valid_unit()); unmask and return the unit to its prior lifecycle.
 if [ -z "$DRY_RUN" ] && [ -f "$MSVC_LIST" ]; then
   if [ -s "$CUR_MASKED" ]; then
     grep -Fxvf "$CUR_MASKED" "$MSVC_LIST" | while IFS= read -r unit; do
       [ -z "$unit" ] && continue
-      systemctl --user unmask "$unit" >/dev/null 2>&1
-      printf '%s\n' "{\"unit\":\"$unit\",\"masked\":\"no\"}" >> "$KFILE"
+      if valid_unit "$unit"; then
+        unmask_unit "$unit"
+        printf '%s\n' "{\"unit\":\"$unit\",\"masked\":\"no\"}" >> "$KFILE"
+      fi
     done
   else
     grep -v '^$' "$MSVC_LIST" | while IFS= read -r unit; do
       [ -z "$unit" ] && continue
-      systemctl --user unmask "$unit" >/dev/null 2>&1
-      printf '%s\n' "{\"unit\":\"$unit\",\"masked\":\"no\"}" >> "$KFILE"
+      if valid_unit "$unit"; then
+        unmask_unit "$unit"
+        printf '%s\n' "{\"unit\":\"$unit\",\"masked\":\"no\"}" >> "$KFILE"
+      fi
     done
   fi
   cp "$CUR_MASKED" "$MSVC_LIST" 2>/dev/null

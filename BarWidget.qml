@@ -197,6 +197,7 @@ BarWidget {
   readonly property string dataDir: Quickshell.env("HOME") + "/.local/share/omcontrol"
   readonly property string barStatsPath: dataDir + "/barstats.json"
   readonly property string runnerPath: Qt.resolvedUrl("backend/run-capped.sh").toString().replace("file://", "")
+  readonly property string prefsPath: Qt.resolvedUrl("backend/prefs.py").toString().replace("file://", "")
   readonly property int maxOutputBytes: 1048576
   readonly property var trustedEnv: ({
     "PATH": "/usr/bin:/bin",
@@ -258,8 +259,8 @@ BarWidget {
     id: barStatsLoadProc
     clearEnvironment: true
     environment: root.trustedEnv
-    command: ["/usr/bin/timeout", "-k", "2", "5", "/bin/sh", root.runnerPath, "/bin/sh", "-c",
-              "cat '" + root.barStatsPath + "' 2>/dev/null || true"]
+    command: ["/usr/bin/timeout", "-k", "2", "5", "/bin/sh", root.runnerPath, "/usr/bin/python3",
+              root.prefsPath, "read"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -278,10 +279,10 @@ BarWidget {
   }
 
   function saveBarPrefs() {
-    var json = JSON.stringify({ stats: root.barStats, mode: root.barStatMode, barShowBell: root.barShowBell })
-    var safe = json.replace(/'/g, "'\\''")
-    barStatsSaveProc.command = ["/usr/bin/timeout", "-k", "2", "5", "/bin/sh", root.runnerPath, "/bin/sh", "-c",
-      "mkdir -p '" + root.dataDir + "' && printf '%s' '" + safe + "' > '" + root.barStatsPath + ".tmp' && mv '" + root.barStatsPath + ".tmp' '" + root.barStatsPath + "'"]
+    var payload = JSON.stringify({ stats: root.barStats, mode: root.barStatMode, barShowBell: root.barShowBell })
+    barStatsSaveProc.command = ["/usr/bin/timeout", "-k", "2", "5", "/bin/sh", root.runnerPath, "/usr/bin/python3",
+                                root.prefsPath, "write"]
+    barStatsSaveProc.pending = payload
     barStatsSaveProc.running = false
     barStatsSaveProc.running = true
   }
@@ -298,11 +299,20 @@ BarWidget {
     root.saveBarPrefs()
   }
 
-  Process {
+Process {
     id: barStatsSaveProc
     clearEnvironment: true
     environment: root.trustedEnv
-    running: false
+    stdinEnabled: true
+    property string pending: ""
+    onStarted: {
+      if (barStatsSaveProc.pending !== "") barStatsSaveProc.write(barStatsSaveProc.pending)
+      barStatsSaveProc.stdinEnabled = false
+    }
+    onExited: function(exitCode, exitStatus) {
+      if (barStatsSaveProc.stdinEnabled === false) barStatsSaveProc.stdinEnabled = true
+      barStatsSaveProc.pending = ""
+    }
   }
 
   function setPrivacyAlert() {
