@@ -999,8 +999,8 @@ PanelWindow {
   Rectangle {
     id: card
     z: 1
-    width: root.compact ? Style.space(900) : Style.space(1100)
-    height: root.compact ? Style.space(170) : Style.space(740)
+    width: Math.min(root.compact ? Style.space(900) : Style.space(1100), root.width - Style.space(40))
+    height: Math.min(root.compact ? Style.space(170) : Style.space(740), root.height - Style.space(40))
     anchors.centerIn: parent
     radius: Style.cornerRadius || 12
     color: root.surface
