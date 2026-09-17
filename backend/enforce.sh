@@ -96,8 +96,11 @@ grep -v '^$' "$TMP" | sed 's/\r$//' | while IFS='|' read -r kind action pattern;
     # rule went away — a mask once applied must not outlive the rule.
     if valid_unit "$pattern"; then
       # Status before masking, surfaced in the caller's JSON so the reviewer
-      # can see exactly which unit was affected and in what state.
-      STATE=$(systemctl --user is-active "$pattern" 2>/dev/null || echo unknown)
+      # can see exactly which unit was affected and in what state. unit-state.sh
+      # keeps this to one bare line (systemctl exits nonzero for inactive units,
+      # which would otherwise append "unknown" as a second line and embed a raw
+      # newline in the JSON).
+      STATE=$(sh "$(dirname "$0")/unit-state.sh" "$pattern")
       if [ -z "$DRY_RUN" ]; then
         mask_unit "$pattern"
         echo "$pattern" >>"$CUR_MASKED"
