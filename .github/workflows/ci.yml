@@ -53,9 +53,9 @@ jobs:
 
       # process-detail.sh is a python3 entrypoint with a .sh name; it is
       # excluded from shellcheck/shfmt and checked by the Python compile step.
-      - name: shfmt --check
+      - name: shfmt --diff
         run: >
-          shfmt --check --indent 2 --case-indent
+          shfmt --diff --indent 2 --case-indent
           backend/alert-prefs.sh backend/app-action.sh backend/app-net.sh
           backend/app-stats.sh backend/bar-prefs.sh backend/bootstrap.sh
           backend/collect.sh backend/enforce.sh backend/event-context.sh
