@@ -33,7 +33,7 @@ while true; do
   # timeout guard with process-group termination: a wedged collector gets
   # SIGTERM on the whole group at the deadline and SIGKILL after a 2s grace,
   # so it can never stall or keep writing to the sampling loop forever.
-  "$T" -k 2 30 /bin/sh "$SELF_DIR/backend/collect.sh" > /dev/null 2>&1
+  "$T" -k 2 30 /bin/sh "$SELF_DIR/backend/collect.sh" >/dev/null 2>&1
   RC=$?
   I=$((I + 1))
 
@@ -42,8 +42,12 @@ while true; do
     if [ "$FL" -gt 4 ]; then
       SLEEP=30
     else
-      P=1; K=0
-      while [ "$K" -lt "$FL" ]; do P=$((P * 2)); K=$((K + 1)); done
+      P=1
+      K=0
+      while [ "$K" -lt "$FL" ]; do
+        P=$((P * 2))
+        K=$((K + 1))
+      done
       SLEEP=$((2 * P))
     fi
   else
@@ -63,8 +67,8 @@ while true; do
   fi
 
   if [ $((I % 3)) -eq 0 ]; then
-    "$T" -k 2 15 /bin/sh "$SELF_DIR/backend/enforce.sh" > /dev/null 2>&1
-    "$T" -k 2 15 /bin/sh "$SELF_DIR/backend/privacy.sh" > /dev/null 2>&1
+    "$T" -k 2 15 /bin/sh "$SELF_DIR/backend/enforce.sh" >/dev/null 2>&1
+    "$T" -k 2 15 /bin/sh "$SELF_DIR/backend/privacy.sh" >/dev/null 2>&1
   fi
   "$S" "$SLEEP"
 done

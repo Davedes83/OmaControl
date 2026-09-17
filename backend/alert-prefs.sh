@@ -16,7 +16,7 @@ BACKEND="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 DEFAULT='{"enabled":true,"types":{"New App Launch":"toast","Mic or Cam Access":"notify","Service Change":"none","Unsigned App Launch":"notify","Location Tracking":"none","New Service Launch":"none","App Update":"notify","New Suspicious App":"notify","App Exit":"none","App Activity":"notify"},"charts":{"App Exit":false}}'
 
 if [ ! -f "$PREFS" ]; then
-  echo "$DEFAULT" > "$PREFS"
+  echo "$DEFAULT" >"$PREFS"
 fi
 
 OMC_BACKEND="$BACKEND" python3 - "$PREFS" "$@" <<'PY'

@@ -21,7 +21,7 @@
 . "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/bootstrap.sh"
 
 MAX="${OMCONTROL_MAX_OUT_BYTES:-1048576}"
-case "$MAX" in ''|*[!0-9]*) MAX=1048576 ;; esac
+case "$MAX" in '' | *[!0-9]*) MAX=1048576 ;; esac
 [ "$MAX" -gt 0 ] 2>/dev/null || MAX=1048576
 
 # Pipe the producer through head. When MAX bytes pass, head closes the

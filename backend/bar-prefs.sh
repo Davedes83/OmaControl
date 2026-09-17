@@ -9,7 +9,8 @@ FILE="${OMCONTROL_BAR_PREFS:-$DATA_DIR/barstats.json}"
 export OMCONTROL_BAR_PREFS="$FILE"
 mkdir -p "$DATA_DIR"
 
-NEW_JSON=$(python3 - "$FILE" "$@" <<'PY'
+NEW_JSON=$(
+  python3 - "$FILE" "$@" <<'PY'
 import json, os, sys
 path, action = sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else ""
 val = sys.argv[3] if len(sys.argv) > 3 else ""

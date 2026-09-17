@@ -57,7 +57,8 @@ if [ "$ROLLS_AGE" -lt 30 ] && [ -f "$ROLL_CACHE" ]; then
   [ -z "$H6" ] && H6="[]"
   [ -z "$H1D" ] && H1D="[]"
 else
-  ROLLS_OUT=$(sqlite3 -cmd ".timeout 3000" "$DB" <<SQL 2>/dev/null
+  ROLLS_OUT=$(
+    sqlite3 -cmd ".timeout 3000" "$DB" <<SQL 2>/dev/null
 SELECT '[' || group_concat(json_object('ts', ts, 'cpu', cpu, 'mem_pct', mem, 'gpu', gpu, 'procs', procs, 'disk', disk, 'rx', rx, 'tx', tx, 'ctemp', ctemp, 'gtemp', gtemp)) || ']'
 FROM (SELECT (ts/10)*10 as ts, avg(cpu_pct) as cpu,
              round(avg(mem_used_mb) * 100.0 / avg(mem_total_mb)) as mem,
@@ -86,36 +87,44 @@ FROM (SELECT (ts/900)*900 as ts, avg(cpu_pct) as cpu,
              round((max(net_tx_bytes) - min(net_tx_bytes)) / nullif(max(ts) - min(ts), 0) / 1024) as tx
       FROM metrics WHERE ts > $NOW - 86400 GROUP BY ts/900 ORDER BY ts);
 SQL
-)
+  )
   H1=$(printf '%s\n' "$ROLLS_OUT" | sed -n '1p')
   H6=$(printf '%s\n' "$ROLLS_OUT" | sed -n '2p')
   H1D=$(printf '%s\n' "$ROLLS_OUT" | sed -n '3p')
   [ -z "$H1" ] && H1="[]"
   [ -z "$H6" ] && H6="[]"
   [ -z "$H1D" ] && H1D="[]"
-  printf '%s\n%s\n%s\n' "$H1" "$H6" "$H1D" > "$ROLL_CACHE.tmp.$$"
+  printf '%s\n%s\n%s\n' "$H1" "$H6" "$H1D" >"$ROLL_CACHE.tmp.$$"
   mv "$ROLL_CACHE.tmp.$$" "$ROLL_CACHE"
-  echo "$NOW" > "$ROLL_STAMP"
+  echo "$NOW" >"$ROLL_STAMP"
 fi
 
 # Live network rates from the two most recent metric samples (KB/s).
 NET_L=$(sqlite3 -cmd ".timeout 3000" "$DB" "SELECT ts, COALESCE(net_rx_bytes,0), COALESCE(net_tx_bytes,0) FROM metrics WHERE net_rx_bytes IS NOT NULL ORDER BY ts DESC LIMIT 2;" 2>/dev/null)
 RX_KBS=0
 TX_KBS=0
-OLD_IFS=$IFS; IFS=$'| \n'; set -- $NET_L; IFS=$OLD_IFS
-T2=$1; B2=$2; C2=$3
-T1=$4; B1=$5; C1=$6
+OLD_IFS=$IFS
+IFS=$'| \n'
+set -- $NET_L
+IFS=$OLD_IFS
+T2=$1
+B2=$2
+C2=$3
+T1=$4
+B1=$5
+C1=$6
 if [ -n "$T2" ] && [ -n "$T1" ] && [ "$T2" != "$T1" ]; then
   DT=$((T2 - T1))
-  [ "$DT" -gt 0 ] && B_DT=$((B2 - B1)) && C_DT=$((C2 - C1)) && \
-    RX_KBS=$(awk "BEGIN{printf \"%.1f\", ($B_DT>0? $B_DT:0) / $DT / 1024}") && \
+  [ "$DT" -gt 0 ] && B_DT=$((B2 - B1)) && C_DT=$((C2 - C1)) &&
+    RX_KBS=$(awk "BEGIN{printf \"%.1f\", ($B_DT>0? $B_DT:0) / $DT / 1024}") &&
     TX_KBS=$(awk "BEGIN{printf \"%.1f\", ($C_DT>0? $C_DT:0) / $DT / 1024}")
 fi
 [ -z "$RX_KBS" ] && RX_KBS=0
 [ -z "$TX_KBS" ] && TX_KBS=0
 
 # Disabled app names from rules.json.
-DISABLED=$(python3 - "$RULES" <<'PY'
+DISABLED=$(
+  python3 - "$RULES" <<'PY'
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
@@ -141,7 +150,8 @@ export OMC_DB="$DB" OMC_NOW="$NOW" OMC_DISABLED="$DISABLED" OMC_PREFS="$ALERT_PR
 # Final payload is piped through a hard byte cap as a last resort; a runaway
 # producer must never be able to retain unbounded output in the long-lived
 # shell. Real payloads are far smaller than the 256 KB ceiling.
-{ H1="$H1" H6="$H6" H1D="$H1D" CPU="$CPU" MEM="$MEM" GPU="$GPU" PROCS="$PROCS" DISK="$DISK" DISK_R="$DISK_R" DISK_W="$DISK_W" RX="$RX_KBS" TX="$TX_KBS" CTEMP="$CTEMP" GTEMP="$GTEMP" python3 - "$DB" <<'PY'
+{
+  H1="$H1" H6="$H6" H1D="$H1D" CPU="$CPU" MEM="$MEM" GPU="$GPU" PROCS="$PROCS" DISK="$DISK" DISK_R="$DISK_R" DISK_W="$DISK_W" RX="$RX_KBS" TX="$TX_KBS" CTEMP="$CTEMP" GTEMP="$GTEMP" python3 - "$DB" <<'PY'
 import json, os, sqlite3, sys, time
 from collections import defaultdict
 

@@ -29,15 +29,16 @@ log_event() {
   [ -f "$DB" ] || return 0
   now=$(date +%s)
   # Publisher is resolved from app_meta inside sql-ins.py (bound params).
-  printf 'event\t%s\t%s\t%s\t\t%s\t0\n' "$now" "$type" "$NAME" "$msg" \
-    | OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" 2>/dev/null
+  printf 'event\t%s\t%s\t%s\t\t%s\t0\n' "$now" "$type" "$NAME" "$msg" |
+    OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" 2>/dev/null
 }
 
 # Read-modify-write of rules.json, serialized with flock (a double-click or a
 # GUI action racing enforce.sh/poll would otherwise clobber a concurrent write)
 # and written atomically (tmp + rename).
 rules_set_state() {
-  { flock 9 || return 1
+  {
+    flock 9 || return 1
     python3 - "$RULES_FILE" "$NAME" "$1" <<'PY'
 import json, os, sys
 path, name, on = sys.argv[1], sys.argv[2], sys.argv[3] == "on"
@@ -63,10 +64,26 @@ PY
 }
 
 case "$ACTION" in
-  kill) PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME"); [ -n "$PIDS" ] && kill -TERM $PIDS 2>/dev/null; log_event "user_kill" "Terminated $NAME" ;;
-  killall) PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME"); [ -n "$PIDS" ] && kill -KILL $PIDS 2>/dev/null; log_event "user_kill" "Force-killed $NAME" ;;
-  stop) PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME"); [ -n "$PIDS" ] && kill -STOP $PIDS 2>/dev/null; log_event "user_pause" "Paused $NAME" ;;
-  cont) PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME"); [ -n "$PIDS" ] && kill -CONT $PIDS 2>/dev/null; log_event "user_resume" "Resumed $NAME" ;;
+  kill)
+    PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME")
+    [ -n "$PIDS" ] && kill -TERM $PIDS 2>/dev/null
+    log_event "user_kill" "Terminated $NAME"
+    ;;
+  killall)
+    PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME")
+    [ -n "$PIDS" ] && kill -KILL $PIDS 2>/dev/null
+    log_event "user_kill" "Force-killed $NAME"
+    ;;
+  stop)
+    PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME")
+    [ -n "$PIDS" ] && kill -STOP $PIDS 2>/dev/null
+    log_event "user_pause" "Paused $NAME"
+    ;;
+  cont)
+    PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME")
+    [ -n "$PIDS" ] && kill -CONT $PIDS 2>/dev/null
+    log_event "user_resume" "Resumed $NAME"
+    ;;
   fast)
     PIDS=$(sh "$(dirname "$0")/match-pids.sh" "$NAME")
     [ -n "$PIDS" ] && renice -n -5 -p $PIDS >/dev/null 2>&1
@@ -87,6 +104,9 @@ case "$ACTION" in
     rules_set_state off
     log_event "user_enable" "Re-enabled $NAME"
     ;;
-  *) echo "unknown action: $ACTION" >&2; exit 1 ;;
+  *)
+    echo "unknown action: $ACTION" >&2
+    exit 1
+    ;;
 esac
 exit $?

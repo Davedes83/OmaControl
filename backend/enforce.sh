@@ -56,9 +56,11 @@ ERRORS=""
 LFILE=$(mktemp /tmp/omc_lblock.XXXXXX)
 
 log_block() {
-  pid="$1"; name="$2"; pattern="$3"
+  pid="$1"
+  name="$2"
+  pattern="$3"
   printf 'event\t%s\tpublisher_block\t%s\tOmaControl\tBlocked forbidden app: %s (%s)\t0\n' \
-    "$NOW" "$name" "$name" "$pattern" >> "$LFILE"
+    "$NOW" "$name" "$name" "$pattern" >>"$LFILE"
 }
 
 TMP=$(mktemp /tmp/omc_rules.XXXXXX)
@@ -69,7 +71,7 @@ CUR_MASKED=$(mktemp /tmp/omc_masked.XXXXXX)
 MSVC_LIST="$DATA_DIR/masked_services"
 trap 'rm -f "$TMP" "$KFILE" "$EFILE" "$LFILE" "$PFILE" "$CUR_MASKED"' EXIT INT TERM
 
-python3 - "$RULES_FILE" > "$TMP" <<'PY'
+python3 - "$RULES_FILE" >"$TMP" <<'PY'
 import json, sys
 try:
     data = json.load(open(sys.argv[1]))
@@ -98,11 +100,11 @@ grep -v '^$' "$TMP" | sed 's/\r$//' | while IFS='|' read -r kind action pattern;
       STATE=$(systemctl --user is-active "$pattern" 2>/dev/null || echo unknown)
       if [ -z "$DRY_RUN" ]; then
         mask_unit "$pattern"
-        echo "$pattern" >> "$CUR_MASKED"
+        echo "$pattern" >>"$CUR_MASKED"
       fi
-      printf '%s\n' "{\"unit\":\"$pattern\",\"masked\":\"yes\",\"state\":\"$STATE\"}" >> "$KFILE"
+      printf '%s\n' "{\"unit\":\"$pattern\",\"masked\":\"yes\",\"state\":\"$STATE\"}" >>"$KFILE"
     else
-      printf '%s\n' "{\"unit\":\"$pattern\",\"error\":\"invalid unit name\"}" >> "$EFILE"
+      printf '%s\n' "{\"unit\":\"$pattern\",\"error\":\"invalid unit name\"}" >>"$EFILE"
     fi
     continue
   fi
@@ -125,7 +127,7 @@ grep -v '^$' "$TMP" | sed 's/\r$//' | while IFS='|' read -r kind action pattern;
     NAME=$(basename "$(readlink /proc/$pid/exe 2>/dev/null)" 2>/dev/null)
     NAME=${NAME:-unknown}
     PAT=$(printf '%s' "$pattern" | tr -d '\n\r|')
-    printf '%s|%s|%s\n' "$pid" "$(echo "$NAME" | tr -d '\n\r|')" "$PAT" >> "$PFILE"
+    printf '%s|%s|%s\n' "$pid" "$(echo "$NAME" | tr -d '\n\r|')" "$PAT" >>"$PFILE"
   done
 done
 
@@ -136,15 +138,15 @@ if [ -z "$DRY_RUN" ] && [ -s "$PFILE" ]; then
   while IFS='|' read -r pid name pat; do
     [ -z "$pid" ] && continue
     kill -TERM "$pid" 2>/dev/null
-  done < "$PFILE"
+  done <"$PFILE"
   sleep 1
   while IFS='|' read -r pid name pat; do
     [ -z "$pid" ] && continue
     [ -d "/proc/$pid" ] || continue
     kill -KILL "$pid" 2>/dev/null
     log_block "$pid" "$name" "$pat"
-    printf '%s\n' "{\"pid\":$pid,\"name\":\"$name\",\"pattern\":\"$pat\"}" >> "$KFILE"
-  done < "$PFILE"
+    printf '%s\n' "{\"pid\":$pid,\"name\":\"$name\",\"pattern\":\"$pat\"}" >>"$KFILE"
+  done <"$PFILE"
 fi
 
 # Unmask services whose disable rule vanished (or was disabled): the mask is
@@ -157,7 +159,7 @@ if [ -z "$DRY_RUN" ] && [ -f "$MSVC_LIST" ]; then
       [ -z "$unit" ] && continue
       if valid_unit "$unit"; then
         unmask_unit "$unit"
-        printf '%s\n' "{\"unit\":\"$unit\",\"masked\":\"no\"}" >> "$KFILE"
+        printf '%s\n' "{\"unit\":\"$unit\",\"masked\":\"no\"}" >>"$KFILE"
       fi
     done
   else
@@ -165,7 +167,7 @@ if [ -z "$DRY_RUN" ] && [ -f "$MSVC_LIST" ]; then
       [ -z "$unit" ] && continue
       if valid_unit "$unit"; then
         unmask_unit "$unit"
-        printf '%s\n' "{\"unit\":\"$unit\",\"masked\":\"no\"}" >> "$KFILE"
+        printf '%s\n' "{\"unit\":\"$unit\",\"masked\":\"no\"}" >>"$KFILE"
       fi
     done
   fi
@@ -175,7 +177,7 @@ fi
 
 # Flush audit rows through the parameterized writer (one transaction).
 if [ -s "$LFILE" ]; then
-  OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" < "$LFILE" 2>/dev/null
+  OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" <"$LFILE" 2>/dev/null
 fi
 KILLED_LIST="$(paste -sd, "$KFILE" 2>/dev/null)"
 ERRORS_LIST="$(paste -sd, "$EFILE" 2>/dev/null)"
