@@ -76,6 +76,24 @@ systemctl --user disable --now omcontrol-collect
 - [Omarchy](https://omarchy.org/) Linux, Hyprland, Quickshell
 - `sqlite3`, `python3`, `nvidia-smi` (optional, for GPU metrics)
 
+## Development / Testing
+
+The test suite exercises the schema migration/repair paths and the collector
+end-to-end against throwaway databases — the user's real `history.db` is never
+touched. Run it under any shell you like:
+
+```bash
+tests/run-tests.sh              # default: sh
+tests/run-tests.sh dash         # strict POSIX (Debian/Ubuntu default sh)
+tests/run-tests.sh bash --posix # bash in POSIX compatibility mode
+```
+
+CI (`.github/workflows/ci.yml`) runs the suite under `dash`, `bash`, and
+`bash --posix`, plus static gates: shellcheck, `shfmt --check`, Python
+`compileall`, JSON validation, and a structural QML/JS bracket-balance check.
+`qmllint` runs as an informational step only — it needs the Quickshell module
+tree the CI image doesn't ship.
+
 ## License
 
 MIT

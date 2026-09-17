@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [Dev, master]
+  pull_request:
+
+jobs:
+  tests:
+    name: tests (${{ matrix.shell }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # dash = Debian/Ubuntu /bin/sh; bash + bash --posix = the Arch/Omarchy
+        # default and its strict POSIX mode. Ensures every collector/reader
+        # helper stays portable across both implementations.
+        shell: [dash, bash, "bash --posix"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run test suite
+        run: ./tests/run-tests.sh "${{ matrix.shell }}"
+
+  static:
+    name: static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install analysis tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck shfmt python3 qt6-declarative-dev-tools
+
+      # Day-to-day idioms in this codebase (`CDPATH= cd`, `set -- $(awk ...)`
+      # word-splitting) trip shellcheck's advisory severities, so the gate is
+      # error-level: it blocks real bugs (broken quoting, unbalanced control
+      # flow) without bikeshedding those intentional patterns. The dash/bash
+      # execution matrix above is the portability gate.
+      - name: shellcheck (POSIX sh helpers)
+        run: >
+          shellcheck --shell=sh --severity=error
+          backend/alert-prefs.sh backend/app-action.sh backend/app-net.sh
+          backend/app-stats.sh backend/bar-prefs.sh backend/bootstrap.sh
+          backend/collect.sh backend/enforce.sh backend/event-context.sh
+          backend/events.sh backend/match-pids.sh backend/privacy.sh
+          backend/process-info.sh backend/procs-at.sh backend/run-capped.sh
+          backend/sample-json.sh backend/schema.sh backend/unread.sh
+          omcontrol-poll.sh tests/lib.sh tests/schema-tests.sh
+          tests/collector-tests.sh tests/run-tests.sh
+
+      # omcontrol is authored as a bash-only CLI (#!/usr/bin/bash).
+      - name: shellcheck (bash CLI)
+        run: shellcheck --shell=bash --severity=error omcontrol
+
+      # process-detail.sh is a python3 entrypoint with a .sh name; it is
+      # excluded from shellcheck/shfmt and checked by the Python compile step.
+      - name: shfmt --check
+        run: >
+          shfmt --check --indent 2 --case-indent
+          backend/alert-prefs.sh backend/app-action.sh backend/app-net.sh
+          backend/app-stats.sh backend/bar-prefs.sh backend/bootstrap.sh
+          backend/collect.sh backend/enforce.sh backend/event-context.sh
+          backend/events.sh backend/match-pids.sh backend/privacy.sh
+          backend/process-info.sh backend/procs-at.sh backend/run-capped.sh
+          backend/sample-json.sh backend/schema.sh backend/unread.sh
+          omcontrol-poll.sh tests/lib.sh tests/schema-tests.sh
+          tests/collector-tests.sh tests/run-tests.sh
+
+      - name: Python compileall
+        run: python3 -m compileall -q backend && python3 -m py_compile backend/process-detail.sh tests/check-brackets.py
+
+      - name: JSON validation
+        run: python3 -m json.tool manifest.json >/dev/null
+
+      - name: QML/JS bracket balance
+        run: python3 tests/check-brackets.py BarWidget.qml AppWindow.qml Model.js
+
+      # Informational only: qmllint needs the Quickshell module tree that the
+      # CI image lacks, so module-resolution warnings are expected. The
+      # structural balance check above remains the blocking gate.
+      - name: qmllint (informational)
+        continue-on-error: true
+        run: qmllint -I . BarWidget.qml AppWindow.qml || echo "qmllint reported issues (see above)"

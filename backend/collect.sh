@@ -7,6 +7,7 @@
 
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$SELF_DIR/bootstrap.sh"
+. "$SELF_DIR/schema.sh"
 DATA_DIR="$OMCONTROL_DATA_DIR"
 DB="${OMCONTROL_DB:-$DATA_DIR/history.db}"
 NOW=$(/usr/bin/date +%s)
@@ -14,7 +15,7 @@ NOW=$(/usr/bin/date +%s)
 # Prune stale temp files from past invocations that got killed mid-run.
 find "$DATA_DIR" -maxdepth 1 -mmin +30 \
   \( -name '.omc_*' -o -name '.cur_names.*' -o -name '.new_names.*' \
-     -o -name '.promote.*' -o -name '.fresh.*' -o -name '.seen.*' \) -delete 2>/dev/null
+  -o -name '.promote.*' -o -name '.fresh.*' -o -name '.seen.*' \) -delete 2>/dev/null
 
 # Single-collector guard: BarWidget spawns collect.sh every 2s AND the
 # omcontrol-collect service runs it on the same cadence. Only one may run
@@ -33,104 +34,13 @@ esc() {
 # --- Toast notifications are fired from sql-ins.py (single choke point),
 #     which reads alert_prefs.json itself; nothing here needs the file. ---
 
-# --- One-time schema bootstrap, versioned via PRAGMA user_version. The
-#     marker-file approach could drift (stale mark + missing columns after an
-#     interrupted migration); user_version is authoritative and idempotent.
-#     The full required column set is verified on EVERY tick regardless of the
-#     claimed version — repairs then re-attempt until the schema verifies, so
-#     a migrated-but-marked-5 DB that is missing columns self-heals too. The
-#     version is bumped only once the complete set verifies, so a transiently
-#     failed ALTER can never leave a permanently-stuck schema. ---
-SCHEMA_VERSION=5
-SCHEMA_UV=$(sqlite3 -cmd ".timeout 1500" "$DB" "PRAGMA user_version;" 2>/dev/null)
-if [ -z "$SCHEMA_UV" ]; then
-  SCHEMA_UV=0
-fi
-
-# Base tables (idempotent — safe to run at any time, in any order).
-bootstrap_tables() {
-  sqlite3 -cmd ".timeout 1500" "$DB" <<'SQL' 2>/dev/null
-CREATE TABLE IF NOT EXISTS metrics (
-  ts INTEGER PRIMARY KEY,
-  cpu_pct REAL,
-  mem_used_mb INTEGER,
-  mem_total_mb INTEGER,
-  gpu_pct REAL,
-  gpu_mem_mb INTEGER,
-  gpu_temp INTEGER,
-  cpu_temp INTEGER,
-  proc_count INTEGER,
-  disk_pct REAL,
-  disk_io REAL,
-  disk_r REAL,
-  disk_w REAL,
-  net_rx_bytes INTEGER,
-  net_tx_bytes INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts);
-CREATE TABLE IF NOT EXISTS proc_history (
-  ts INTEGER PRIMARY KEY,
-  procs TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_proc_history_ts ON proc_history(ts);
-CREATE TABLE IF NOT EXISTS app_meta (
-  name TEXT PRIMARY KEY, exe TEXT, pkg TEXT, publisher TEXT,
-  desc TEXT, verified INTEGER DEFAULT 0, source TEXT DEFAULT 'unknown',
-  first_seen INTEGER, updated INTEGER
-);
-CREATE TABLE IF NOT EXISTS events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts INTEGER, type TEXT, app TEXT, publisher TEXT, msg TEXT, read INTEGER DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
-SQL
-}
-
-if [ "$SCHEMA_UV" -lt 1 ]; then
-  bootstrap_tables
-fi
-
-# Always converge on the complete schema, no matter what version the DB
-# claims. The previous logic could bump user_version to 5 before a migration
-# actually landed, so DBs may exist that are marked current yet still broken;
-# gating repairs on the version left those broken permanently. All repairs are
-# idempotent (errors ignored), so they re-run until the schema verifies — only
-# the version bump stays gated on a fully-verified state.
-REQUIRED_SCHEMA=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT (SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('metrics','proc_history','app_meta','events')) + (SELECT count(*) FROM sqlite_master WHERE type='index' AND name IN ('idx_metrics_ts','idx_proc_history_ts','idx_events_ts') AND sql IS NOT NULL);" 2>/dev/null)
-if [ "${REQUIRED_SCHEMA:-0}" != "7" ]; then
-  # A damaged DB can be missing the base tables or their indexes (a
-  # version-marked DB is no proof they exist); recreate everything that is
-  # missing — CREATE IF NOT EXISTS leaves existing tables untouched.
-  bootstrap_tables
-fi
-REQUIRED_COLS=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM pragma_table_info('metrics') WHERE name IN ('disk_pct','disk_io','disk_r','disk_w','net_rx_bytes','net_tx_bytes');" 2>/dev/null)
-if [ "${REQUIRED_COLS:-0}" != "6" ]; then
-  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_pct REAL;" 2>/dev/null || true
-  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_io REAL;" 2>/dev/null || true
-  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_r REAL;" 2>/dev/null || true
-  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_w REAL;" 2>/dev/null || true
-  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_rx_bytes INTEGER;" 2>/dev/null || true
-  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_tx_bytes INTEGER;" 2>/dev/null || true
-  REQUIRED_COLS=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM pragma_table_info('metrics') WHERE name IN ('disk_pct','disk_io','disk_r','disk_w','net_rx_bytes','net_tx_bytes');" 2>/dev/null)
-fi
-if [ "${REQUIRED_COLS:-0}" = "6" ]; then
-  if [ "$SCHEMA_UV" -lt "$SCHEMA_VERSION" ]; then
-    sqlite3 -cmd ".timeout 1500" "$DB" "PRAGMA user_version = $SCHEMA_VERSION;" 2>/dev/null
-  fi
-  # Drop the legacy marker once the schema converges; version is authoritative.
-  rm -f "${DB}.schema_mark_v4"
-else
-  echo "schema migration incomplete: metrics missing $((6 - ${REQUIRED_COLS:-0})) of 6 required columns" >&2
-  exit 1
-fi
-
-# One-time WAL switch (persistent per-DB): readers (sample-json, rollups,
-# omcontrol CLI) no longer block on the collector's writes and vice versa.
-WAL_MARK="$DATA_DIR/.omc_wal_on"
-if [ ! -f "$WAL_MARK" ]; then
-  sqlite3 -cmd ".timeout 1500" "$DB" "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;" >/dev/null 2>/dev/null
-  touch "$WAL_MARK"
-fi
+# --- Schema repair. backend/schema.sh owns the versioned DDL, the
+#     complete-object check (4 tables + 3 indexes) and the v5 metric-column
+#     ALTERs; it converges idempotently from any version-marked state and
+#     only bumps user_version once the full schema verifies. Abort the tick
+#     (exit 1) if the DB cannot be repaired - otherwise the JSON would be
+#     built from an incomplete schema. ---
+if ! schema_repair "$DB" "$DATA_DIR"; then exit 1; fi
 
 D="$DATA_DIR"
 CPU_PRE="$D/.omc_cpu_pre.$$"
@@ -153,7 +63,7 @@ trap 'rm -f -- $TMPFILES' EXIT INT TERM
 # work). Divide by the core count so every surface reports average CPU across
 # cores instead — 100% = one core fully busy.
 NCORES=$(nproc 2>/dev/null || echo 1)
-ps -eo pid,pcpu,pmem,comm --sort=-pcpu --no-headers | head -20 > "$PS_FILE"
+ps -eo pid,pcpu,pmem,comm --sort=-pcpu --no-headers | head -20 >"$PS_FILE"
 
 # --- Per-process I/O baseline (read+write bytes) so the same 0.2s window
 #     below yields live accumulated KB/s for each process. ---
@@ -166,29 +76,33 @@ PROC_IO_AWK='{
   close(f)
   print $1, r, w
 }'
-awk "$PROC_IO_AWK" "$PS_FILE" > "$PROC_IO_PRE"
+awk "$PROC_IO_AWK" "$PS_FILE" >"$PROC_IO_PRE"
 
 # --- Swap per process (VmSwap in kB) ---
-awk '{ f="/proc/"$1"/status"; s=0; while ((getline l < f) > 0) { if (l ~ /^VmSwap:/) { match(l, /^VmSwap: *[0-9]+/); s=substr(l,RLENGTH)+0; break } } close(f); print $1, s }' "$PS_FILE" > "$PROC_SWAP"
+awk '{ f="/proc/"$1"/status"; s=0; while ((getline l < f) > 0) { if (l ~ /^VmSwap:/) { match(l, /^VmSwap: *[0-9]+/); s=substr(l,RLENGTH)+0; break } } close(f); print $1, s }' "$PS_FILE" >"$PROC_SWAP"
 
 # --- Sample capture (one 0.2s window for CPU/disk/proc-IO deltas; the
 #     network rate is a tick-to-tick delta computed later, not this window) ---
 awk '/^cpu /{print "cpu", $5+$6, $2+$3+$4+$5+$6+$7+$8; next}
-     /^cpu[0-9]+ /{sub("cpu","",$1); print $1, $5+$6, $2+$3+$4+$5+$6+$7+$8}' /proc/stat > "$CPU_PRE"
-awk '{print $3, $6, $10}' /proc/diskstats > "$DS_PRE"
+     /^cpu[0-9]+ /{sub("cpu","",$1); print $1, $5+$6, $2+$3+$4+$5+$6+$7+$8}' /proc/stat >"$CPU_PRE"
+awk '{print $3, $6, $10}' /proc/diskstats >"$DS_PRE"
 
 sleep 0.2
 
 awk '/^cpu /{print "cpu", $5+$6, $2+$3+$4+$5+$6+$7+$8; next}
-     /^cpu[0-9]+ /{sub("cpu","",$1); print $1, $5+$6, $2+$3+$4+$5+$6+$7+$8}' /proc/stat > "$CPU_POST"
-awk '{print $3, $6, $10}' /proc/diskstats > "$DS_POST"
+     /^cpu[0-9]+ /{sub("cpu","",$1); print $1, $5+$6, $2+$3+$4+$5+$6+$7+$8}' /proc/stat >"$CPU_POST"
+awk '{print $3, $6, $10}' /proc/diskstats >"$DS_POST"
 
 # --- Per-process I/O post (accumulated) ---
-awk "$PROC_IO_AWK" "$PS_FILE" > "$PROC_IO_POST"
+awk "$PROC_IO_AWK" "$PS_FILE" >"$PROC_IO_POST"
 
 # --- Aggregate CPU usage ---
-set -- $(awk '$1=="cpu"{print $2,$3}' "$CPU_PRE"); PREV_IDLE=$1; PREV_TOTAL=$2
-set -- $(awk '$1=="cpu"{print $2,$3}' "$CPU_POST"); CURR_IDLE=$1; CURR_TOTAL=$2
+set -- $(awk '$1=="cpu"{print $2,$3}' "$CPU_PRE")
+PREV_IDLE=$1
+PREV_TOTAL=$2
+set -- $(awk '$1=="cpu"{print $2,$3}' "$CPU_POST")
+CURR_IDLE=$1
+CURR_TOTAL=$2
 IDLE_DIFF=$((CURR_IDLE - PREV_IDLE))
 TOTAL_DIFF=$((CURR_TOTAL - PREV_TOTAL))
 if [ "$TOTAL_DIFF" -gt 0 ]; then
@@ -264,9 +178,9 @@ awk 'NR==FNR { r[$1]=$2; w[$1]=$3; next }
   { if (!($1 in r)) { r[$1]=$2; w[$1]=$3; next }
     dr=($2-r[$1])*512*5/1024; dw=($3-w[$1])*512*5/1024;
     if (dr<0) dr=0; if (dw<0) dw=0;
-    printf "%s %.1f %.1f\n", $1, dr, dw }' "$DS_PRE" "$DS_POST" > "$DISKIO"
+    printf "%s %.1f %.1f\n", $1, dr, dw }' "$DS_PRE" "$DS_POST" >"$DISKIO"
 
-df -P > "$DF_FILE" 2>/dev/null
+df -P >"$DF_FILE" 2>/dev/null
 DISKS=""
 DISK_MAX_PCT=0
 DF_DEVS=""
@@ -279,7 +193,10 @@ while read -r fs blk used avail pct mount; do
       dev=""
       for dmn_dev in /sys/class/block/dm-*/dm/name; do
         [ -r "$dmn_dev" ] || continue
-        [ "$(cat "$dmn_dev" 2>/dev/null)" = "${fs#/dev/mapper/}" ] && { dev=$(basename "${dmn_dev%/dm/name}"); break; }
+        [ "$(cat "$dmn_dev" 2>/dev/null)" = "${fs#/dev/mapper/}" ] && {
+          dev=$(basename "${dmn_dev%/dm/name}")
+          break
+        }
       done
       [ -z "$dev" ] && continue
       ;;
@@ -298,13 +215,17 @@ while read -r fs blk used avail pct mount; do
   used_gb=$(awk "BEGIN{printf \"%.1f\", $used/1048576}")
   pctv=$(awk "BEGIN{printf \"%.1f\", $used*100/$blk}")
   set -- $(awk -v d="$dev" '$1==d{print $2, $3}' "$DISKIO")
-  rk=${1:-0}; wk=${2:-0}
+  rk=${1:-0}
+  wk=${2:-0}
   DISKS="$DISKS{\"dev\":\"$(esc "$dev")\",\"mount\":\"$(esc "$mount")\",\"size_gb\":$total_gb,\"used_gb\":$used_gb,\"pct\":$pctv,\"read_kbs\":$rk,\"write_kbs\":$wk},"
   # Report the busiest real filesystem as the overall "Disk" metric.
-  OLDIFS=$IFS; IFS=.; set -- $pctv; IFS=$OLDIFS
+  OLDIFS=$IFS
+  IFS=.
+  set -- $pctv
+  IFS=$OLDIFS
   DISK_PCT_INT=$1
   [ "$DISK_PCT_INT" -gt "$DISK_MAX_PCT" ] && DISK_MAX_PCT=$DISK_PCT_INT
-done < "$DF_FILE"
+done <"$DF_FILE"
 if [ -n "$DISKS" ]; then
   DISKS="[${DISKS%,}]"
 else
@@ -332,11 +253,11 @@ DISK_IO_TOT=$(awk "BEGIN{printf \"%.1f\", $DISK_R_TOT + $DISK_W_TOT}")
 #     links (docker/br/veth/bridges) are excluded so wifi/ethernet win. ---
 NET_STATE="$D/.omc_net_state"
 NOW_MS=$(date +%s%3N 2>/dev/null || echo ${NOW}000)
-[ -f "$NET_STATE" ] || : > "$NET_STATE"   # first run: no prior counters, all rates 0
+[ -f "$NET_STATE" ] || : >"$NET_STATE" # first run: no prior counters, all rates 0
 
 awk 'NR>2 { sub(":","",$1); nm=tolower($1)
       if (nm=="lo" || nm ~ /^docker[0-9]*/ || nm ~ /^br-/ || nm ~ /^virbr[0-9]*/ || nm ~ /^veth/ || nm ~ /^vboxnet[0-9]*/) next
-      print nm, $2, $10 }' /proc/net/dev > "$NET_CUR"
+      print nm, $2, $10 }' /proc/net/dev >"$NET_CUR"
 
 NETS=$(awk -v now="$NOW_MS" -v stateout="$NET_STATE_NEW" 'NR==FNR {
       rx[$1]=$2; tx[$1]=$3; order[++n]=$1; next }
@@ -420,7 +341,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     if [ ! -f "$GPUXML" ] || [ -n "$(find "$GPUXML" -mmin +1 2>/dev/null)" ]; then
       GPUXML_TMP="$D/.omc_gpuxml_cache.tmp.$$"
       TMPFILES="$TMPFILES $GPUXML_TMP"
-      timeout 10 nvidia-smi -q -x 2>/dev/null > "$GPUXML_TMP"
+      timeout 10 nvidia-smi -q -x 2>/dev/null >"$GPUXML_TMP"
       [ -s "$GPUXML_TMP" ] && mv "$GPUXML_TMP" "$GPUXML"
     fi
     if [ -s "$GPUXML" ]; then
@@ -462,11 +383,13 @@ if [ -z "$GPU_NAME" ]; then
     GPU_NAME="AMD GPU"
     GPU_DRIVER="amdgpu"
     if [ -r "$ADEV/mem_info_vram_used" ]; then
-      V=$(cat "$ADEV/mem_info_vram_used" 2>/dev/null); [ -n "$V" ] || V=0
+      V=$(cat "$ADEV/mem_info_vram_used" 2>/dev/null)
+      [ -n "$V" ] || V=0
       GPU_MEM=$((V / 1048576))
     fi
     if [ -r "$ADEV/mem_info_vram_total" ]; then
-      V=$(cat "$ADEV/mem_info_vram_total" 2>/dev/null); [ -n "$V" ] || V=0
+      V=$(cat "$ADEV/mem_info_vram_total" 2>/dev/null)
+      [ -n "$V" ] || V=0
       GPU_MEM_TOTAL=$((V / 1048576))
     fi
     for hw in /sys/class/hwmon/hwmon*; do
@@ -522,7 +445,7 @@ GPU_PROC_MAP="$D/.omc_gpu_proc.$$"
 TMPFILES="$TMPFILES $GPU_PROC_MAP"
 # Always create the file: the merged PROCS awk below reads it, and it stays
 # empty whenever the driver produced no XML (no NVIDIA, unloaded driver, …).
-: > "$GPU_PROC_MAP"
+: >"$GPU_PROC_MAP"
 # nvidia-smi only lists compute contexts via --query-compute-apps (usually
 # empty), so parse the XML process table which includes graphical processes.
 # Reuses the cached once-per-minute -q -x dump from the GPU block above; no
@@ -539,7 +462,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
       if (pidname != "") { print pidname, mem }
       inproc=0
     }
-  ' "$GPUXML" > "$GPU_PROC_MAP"
+  ' "$GPUXML" >"$GPU_PROC_MAP"
 fi
 
 # --- Per-process disk I/O rate (KB/s, from the 0.2s window) ---
@@ -548,7 +471,7 @@ TMPFILES="$TMPFILES $PROC_IO_RATE"
 awk 'NR==FNR { r[$1]=$2; w[$1]=$3; next }
   { rr = ($2 - r[$1]) * 5 / 1024; ww = ($3 - w[$1]) * 5 / 1024
     if (rr < 0) rr = 0; if (ww < 0) ww = 0
-    print $1, (rr + ww) }' "$PROC_IO_PRE" "$PROC_IO_POST" > "$PROC_IO_RATE"
+    print $1, (rr + ww) }' "$PROC_IO_PRE" "$PROC_IO_POST" >"$PROC_IO_RATE"
 
 PROCS=$(awk '
   FILENAME == gpumap { gpu[$1]=$2; next }
@@ -574,7 +497,8 @@ DELETE FROM proc_history WHERE ts < $NOW - 86400;
 DELETE FROM events WHERE ts < $NOW - 1209600;"
 
 # Metric-spike events (persistent log for the Events tab).
-SPC=$(printf "%d" "${CPU_PCT%.*}" 2>/dev/null); [ -z "$SPC" ] && SPC=0
+SPC=$(printf "%d" "${CPU_PCT%.*}" 2>/dev/null)
+[ -z "$SPC" ] && SPC=0
 if [ "$SPC" -ge 95 ]; then
   SQL="$SQL
 INSERT INTO events (ts, type, app, publisher, msg) VALUES ($NOW, 'cpu_spike', '', '', 'CPU peaked at $CPU_PCT%')
@@ -597,8 +521,8 @@ LAST_PROCMIN=$(cat "$DATA_DIR/.omc_proc_min" 2>/dev/null || echo 0)
 if [ "$PROC_MIN" -gt "$LAST_PROCMIN" ]; then
   PROC_TS=$((PROC_MIN * 60))
   PER_PROC_NET="1"
-  if [ -f "$DATA_DIR/metrics_prefs.json" ] && \
-     grep -q '"perProcNet"[[:space:]]*:[[:space:]]*\(false\|0\)' "$DATA_DIR/metrics_prefs.json" 2>/dev/null; then
+  if [ -f "$DATA_DIR/metrics_prefs.json" ] &&
+    grep -q '"perProcNet"[[:space:]]*:[[:space:]]*\(false\|0\)' "$DATA_DIR/metrics_prefs.json" 2>/dev/null; then
     PER_PROC_NET="0"
   fi
   # Per-process network KB/s for this minute (ss-based, like the netspeed
@@ -610,11 +534,12 @@ if [ "$PROC_MIN" -gt "$LAST_PROCMIN" ]; then
   NETPROCS_FILE="$D/.omc_netprocs.$$"
   TMPFILES="$TMPFILES $NETPROCS_FILE"
   if [ "$PER_PROC_NET" = "1" ]; then
-    OMCONTROL_DATA_DIR="$DATA_DIR" python3 "$(dirname "$0")/net-procs.py" > "$NETPROCS_FILE" 2>/dev/null
+    OMCONTROL_DATA_DIR="$DATA_DIR" python3 "$(dirname "$0")/net-procs.py" >"$NETPROCS_FILE" 2>/dev/null
   else
-    : > "$NETPROCS_FILE"
+    : >"$NETPROCS_FILE"
   fi
-  PROC_JSON=$(PROCS_RAW="$PROCS" OMC_NETPROCS="$NETPROCS_FILE" python3 - <<'PY'
+  PROC_JSON=$(
+    PROCS_RAW="$PROCS" OMC_NETPROCS="$NETPROCS_FILE" python3 - <<'PY'
 import json, os, sys
 raw = os.environ.get("PROCS_RAW", "").strip()
 net = []
@@ -652,26 +577,26 @@ for e in net:
         break
 print(json.dumps(procs))
 PY
-)
+  )
   PROC_JSON_SQL=$(echo "$PROC_JSON" | sed "s/'/''/g")
   sqlite3 -cmd ".timeout 1500" "$DB" "INSERT OR REPLACE INTO proc_history VALUES ($PROC_TS, '$PROC_JSON_SQL');" 2>/dev/null
   awk '{print $1, $4}' "$PS_FILE" | OMCONTROL_DB="$DB" python3 "$(dirname "$0")/app-meta.py" 2>/dev/null
   # App-exit events: names in last minute's snapshot that are gone now
   # (only "real" apps: resolved to a package/core, never ephemeral shells
   # or churning kernel worker threads).
-  ps -eo comm --no-headers 2>/dev/null | sed 's/[[:space:]]*$//' \
-    | grep -vE '^(sh|bash|zsh|dash|fish|ps|pgrep|grep|awk|sed|sleep|cat|head|tail|true|false|tee|sort|uniq|comm|notify-send|xargs|find|rm|cp|mv|mkdir|dirname|basename|logout|timeout|omcontrol-poll|sd_notify|kworker.*|kthreadd|ksoftirqd|kswapd|kcompactd|khugepaged|kblockd|kdevtmpfs|khelper|writeback|jbd2|kcryptd|dmcrypt_write|oom_reaper|migration|watchdog|cpuhp|rcu|scsi_|usb_|irq/|ata_|xfs-|btrfs-|flush-|events_unbound|netns|kauditd|\[.*\]|systemd-udevd)$' \
-    | sort -u > "$DATA_DIR/.cur_names_min.$$"
+  ps -eo comm --no-headers 2>/dev/null | sed 's/[[:space:]]*$//' |
+    grep -vE '^(sh|bash|zsh|dash|fish|ps|pgrep|grep|awk|sed|sleep|cat|head|tail|true|false|tee|sort|uniq|comm|notify-send|xargs|find|rm|cp|mv|mkdir|dirname|basename|logout|timeout|omcontrol-poll|sd_notify|kworker.*|kthreadd|ksoftirqd|kswapd|kcompactd|khugepaged|kblockd|kdevtmpfs|khelper|writeback|jbd2|kcryptd|dmcrypt_write|oom_reaper|migration|watchdog|cpuhp|rcu|scsi_|usb_|irq/|ata_|xfs-|btrfs-|flush-|events_unbound|netns|kauditd|\[.*\]|systemd-udevd)$' |
+    sort -u >"$DATA_DIR/.cur_names_min.$$"
   if [ -f "$DATA_DIR/.last_names_min" ]; then
     while IFS= read -r nm; do
       [ -z "$nm" ] && continue
       grep -qx "$nm" "$DATA_DIR/.cur_names_min.$$" && continue
       nm=$(printf '%s' "$nm" | tr -d '\r')
       printf 'event\t%s\tapp_exit\t%s\t\tApp closed: %s\t1\n' "$PROC_TS" "$nm" "$nm"
-    done < "$DATA_DIR/.last_names_min" | OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" 2>/dev/null
+    done <"$DATA_DIR/.last_names_min" | OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" 2>/dev/null
   fi
   mv "$DATA_DIR/.cur_names_min.$$" "$DATA_DIR/.last_names_min"
-  echo "$PROC_MIN" > "$DATA_DIR/.omc_proc_min"
+  echo "$PROC_MIN" >"$DATA_DIR/.omc_proc_min"
 fi
 
 # --- Downsampled history rolls moved out of the collector: collect.sh runs on
@@ -691,31 +616,31 @@ ps -eo pid,comm 2>/dev/null | while read -r pid name; do
   if [ -r "/proc/$pid/cmdline" ] && [ -n "$(head -c1 "/proc/$pid/cmdline" 2>/dev/null)" ]; then
     echo "$name"
   fi
-done | \
-  grep -vE '^(sh|bash|zsh|dash|fish|ps|pgrep|grep|awk|sed|sleep|cat|head|tail|true|false|tee|sort|uniq|comm|notify-send|omarchy-notification-send|xargs|find|rm|cp|mv|mkdir|dirname|basename|timeout|kworker.*|kthreadd|ksoftirqd|kswapd|kcompactd|khugepaged|kblockd|kdevtmpfs|khelper|writeback|jbd2|kcryptd|dmcrypt_write|oom_reaper|migration|watchdog|cpuhp|rcu|scsi_|usb_|irq/|ata_|xfs-|btrfs-|flush-|events_unbound|netns|kauditd|systemd-udevd)$' | \
-  sort | uniq > "$DATA_DIR/.cur_names.$$"
+done |
+  grep -vE '^(sh|bash|zsh|dash|fish|ps|pgrep|grep|awk|sed|sleep|cat|head|tail|true|false|tee|sort|uniq|comm|notify-send|omarchy-notification-send|xargs|find|rm|cp|mv|mkdir|dirname|basename|timeout|kworker.*|kthreadd|ksoftirqd|kswapd|kcompactd|khugepaged|kblockd|kdevtmpfs|khelper|writeback|jbd2|kcryptd|dmcrypt_write|oom_reaper|migration|watchdog|cpuhp|rcu|scsi_|usb_|irq/|ata_|xfs-|btrfs-|flush-|events_unbound|netns|kauditd|systemd-udevd)$' |
+  sort | uniq >"$DATA_DIR/.cur_names.$$"
 
-sort "$SEEN_FILE" > "$DATA_DIR/.seen.sorted.$$"
-sort "$CAND_FILE" > "$DATA_DIR/.cand.sorted.$$"
-comm -23 "$DATA_DIR/.cur_names.$$" "$DATA_DIR/.seen.sorted.$$" > "$DATA_DIR/.new_names.$$"
-comm -12 "$DATA_DIR/.new_names.$$" "$DATA_DIR/.cand.sorted.$$" > "$DATA_DIR/.promote.$$"
-comm -23 "$DATA_DIR/.new_names.$$" "$DATA_DIR/.cand.sorted.$$" > "$DATA_DIR/.fresh.$$"
+sort "$SEEN_FILE" >"$DATA_DIR/.seen.sorted.$$"
+sort "$CAND_FILE" >"$DATA_DIR/.cand.sorted.$$"
+comm -23 "$DATA_DIR/.cur_names.$$" "$DATA_DIR/.seen.sorted.$$" >"$DATA_DIR/.new_names.$$"
+comm -12 "$DATA_DIR/.new_names.$$" "$DATA_DIR/.cand.sorted.$$" >"$DATA_DIR/.promote.$$"
+comm -23 "$DATA_DIR/.new_names.$$" "$DATA_DIR/.cand.sorted.$$" >"$DATA_DIR/.fresh.$$"
 
 NEW_APPS="[]"
 if [ -s "$DATA_DIR/.promote.$$" ]; then
-  NEW_APPS=$(awk '{gsub(/["\\]/, " ", $0); printf "{\"name\":\"%s\",\"first_seen\":'$NOW'}", $0; if (NR < n) printf ","}' n="$(wc -l < "$DATA_DIR/.promote.$$")" "$DATA_DIR/.promote.$$")
+  NEW_APPS=$(awk '{gsub(/["\\]/, " ", $0); printf "{\"name\":\"%s\",\"first_seen\":'$NOW'}", $0; if (NR < n) printf ","}' n="$(wc -l <"$DATA_DIR/.promote.$$")" "$DATA_DIR/.promote.$$")
   NEW_APPS="[$NEW_APPS]"
   while IFS= read -r nm; do
     nm=$(echo "$nm" | tr -d '\r')
     [ -n "$nm" ] || continue
-    echo "$NOW $nm" >> "$NEWAPPS_LOG"
-  done < "$DATA_DIR/.promote.$$"
+    echo "$NOW $nm" >>"$NEWAPPS_LOG"
+  done <"$DATA_DIR/.promote.$$"
 
   # Classify each first-seen launch via the app-meta cache: verified apps are
   # plain launches, known-but-unverified are unsigned_launch, anything without
   # a resolved publisher is an unknown_app — the Security bucket / chart pins.
-  OMCONTROL_NOW="$NOW" python3 - "$DB" "$DATA_DIR/.promote.$$" <<'PY' | \
-      OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" 2>/dev/null
+  OMCONTROL_NOW="$NOW" python3 - "$DB" "$DATA_DIR/.promote.$$" <<'PY' |
+\
 import os, sqlite3, sys
 db = sys.argv[1]
 now = int(os.environ.get("OMCONTROL_NOW") or 0)
@@ -740,10 +665,11 @@ try:
 finally:
     con.close()
 PY
-  cat "$DATA_DIR/.promote.$$" >> "$SEEN_FILE"
+    OMCONTROL_DB="$DB" python3 "$(dirname "$0")/sql-ins.py" 2>/dev/null
+  cat "$DATA_DIR/.promote.$$" >>"$SEEN_FILE"
 fi
 
-sort -u "$SEEN_FILE" | tail -4000 > "$DATA_DIR/.seen.$$" && mv "$DATA_DIR/.seen.$$" "$SEEN_FILE"
+sort -u "$SEEN_FILE" | tail -4000 >"$DATA_DIR/.seen.$$" && mv "$DATA_DIR/.seen.$$" "$SEEN_FILE"
 cp "$DATA_DIR/.fresh.$$" "$CAND_FILE"
 
 RECENT_APPS=$(tail -20 "$NEWAPPS_LOG" | tail -5 | awk '{gsub(/["\\]/, " ", $2); printf "{\"name\":\"%s\",\"ts\":%s},", $2, $1}' | sed 's/,$//')
@@ -757,7 +683,8 @@ rm -f "$DATA_DIR/.cur_names.$$" "$DATA_DIR/.new_names.$$" "$DATA_DIR/.promote.$$
 # Capped as a last resort: a malfunctioning producer must never be able to
 # retain unbounded output in the long-lived shell. 262 KB is far above the
 # ~10 KB this blob realistically reaches.
-{ cat <<ENDJSON
+{
+  cat <<ENDJSON
 {
   "cpu_pct": $CPU_PCT,
   "cores": $CORES,
