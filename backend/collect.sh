@@ -36,17 +36,19 @@ esc() {
 # --- One-time schema bootstrap, versioned via PRAGMA user_version. The
 #     marker-file approach could drift (stale mark + missing columns after an
 #     interrupted migration); user_version is authoritative and idempotent.
-#     Each step only touches what the version says is missing, so fresh and
-#     legacy DBs converge on the same shape. Runners: the main CREATE/ALTER
-#     ladder lives here (single sqlite call per tick when stale), and the
-#     version is bumped ONLY after the full required column set verifies —
-#     a transiently failed ALTER can never leave a permanently-stuck schema. ---
+#     The full required column set is verified on EVERY tick regardless of the
+#     claimed version — repairs then re-attempt until the schema verifies, so
+#     a migrated-but-marked-5 DB that is missing columns self-heals too. The
+#     version is bumped only once the complete set verifies, so a transiently
+#     failed ALTER can never leave a permanently-stuck schema. ---
 SCHEMA_VERSION=5
 SCHEMA_UV=$(sqlite3 -cmd ".timeout 1500" "$DB" "PRAGMA user_version;" 2>/dev/null)
 if [ -z "$SCHEMA_UV" ]; then
   SCHEMA_UV=0
 fi
-if [ "$SCHEMA_UV" -lt 1 ]; then
+
+# Base tables (idempotent — safe to run at any time, in any order).
+bootstrap_tables() {
   sqlite3 -cmd ".timeout 1500" "$DB" <<'SQL' 2>/dev/null
 CREATE TABLE IF NOT EXISTS metrics (
   ts INTEGER PRIMARY KEY,
@@ -82,35 +84,43 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 SQL
+}
+
+if [ "$SCHEMA_UV" -lt 1 ]; then
+  bootstrap_tables
 fi
-# Legacy DBs predate the disk/net columns; while the schema is behind the
-# current version, repair any missing columns on every tick — no matter which
-# version the DB claims. An ALTER can fail transiently (lock/IO), so the
-# repair MUST be re-attempted until the required shape verifies.
-if [ "$SCHEMA_UV" -lt "$SCHEMA_VERSION" ]; then
-  HAS_DISK_COLS=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM pragma_table_info('metrics') WHERE name IN ('disk_io','disk_r','disk_w');" 2>/dev/null)
-  if [ "$HAS_DISK_COLS" != "3" ]; then
-    sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_pct REAL;" 2>/dev/null || true
-    sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_io REAL;" 2>/dev/null || true
-    sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_r REAL;" 2>/dev/null || true
-    sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_w REAL;" 2>/dev/null || true
+
+# Always converge on the full required column set, no matter what version the
+# DB claims. The previous logic could bump user_version to 5 before a repair
+# actually landed, so DBs may exist that are marked current yet still missing
+# columns; gating repairs on the version left those broken permanently. All
+# six ALTERs ignore errors, so re-running them against existing columns is
+# harmless — only the version bump stays gated on a verified schema.
+REQUIRED_COLS=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM pragma_table_info('metrics') WHERE name IN ('disk_pct','disk_io','disk_r','disk_w','net_rx_bytes','net_tx_bytes');" 2>/dev/null)
+if [ "${REQUIRED_COLS:-0}" != "6" ]; then
+  # A version-marked DB can also be missing the metrics table entirely;
+  # recreate the base tables (idempotent) so the repairs have a target.
+  HAS_METRICS=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='metrics';" 2>/dev/null)
+  if [ "${HAS_METRICS:-0}" = "0" ]; then
+    bootstrap_tables
   fi
-  HAS_NET_COLS=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM pragma_table_info('metrics') WHERE name IN ('net_rx_bytes','net_tx_bytes');" 2>/dev/null)
-  if [ "$HAS_NET_COLS" != "2" ]; then
-    sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_rx_bytes INTEGER;" 2>/dev/null || true
-    sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_tx_bytes INTEGER;" 2>/dev/null || true
-  fi
-  # Only advance the version when the complete required set verifies;
-  # otherwise leave the version behind and exit so the repair retries next
-  # tick (self-healing). Drop the legacy marker once the version advances.
+  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_pct REAL;" 2>/dev/null || true
+  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_io REAL;" 2>/dev/null || true
+  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_r REAL;" 2>/dev/null || true
+  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_w REAL;" 2>/dev/null || true
+  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_rx_bytes INTEGER;" 2>/dev/null || true
+  sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_tx_bytes INTEGER;" 2>/dev/null || true
   REQUIRED_COLS=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM pragma_table_info('metrics') WHERE name IN ('disk_pct','disk_io','disk_r','disk_w','net_rx_bytes','net_tx_bytes');" 2>/dev/null)
-  if [ "$REQUIRED_COLS" = "6" ]; then
+fi
+if [ "${REQUIRED_COLS:-0}" = "6" ]; then
+  if [ "$SCHEMA_UV" -lt "$SCHEMA_VERSION" ]; then
     sqlite3 -cmd ".timeout 1500" "$DB" "PRAGMA user_version = $SCHEMA_VERSION;" 2>/dev/null
-    rm -f "${DB}.schema_mark_v4"
-  else
-    echo "schema migration incomplete: metrics missing $((6 - ${REQUIRED_COLS:-0})) of 6 required columns" >&2
-    exit 1
   fi
+  # Drop the legacy marker once the schema converges; version is authoritative.
+  rm -f "${DB}.schema_mark_v4"
+else
+  echo "schema migration incomplete: metrics missing $((6 - ${REQUIRED_COLS:-0})) of 6 required columns" >&2
+  exit 1
 fi
 
 # One-time WAL switch (persistent per-DB): readers (sample-json, rollups,

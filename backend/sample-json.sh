@@ -371,7 +371,11 @@ def proc_cpu_msg(procs):
         known = mnorm.get(norm(nm), {}).get("publisher") not in ("", "Unknown", None)
         return "%s at %s%% CPU" % (nm, round(v, 1)) if known else "A process is using %s%% CPU" % round(v, 1)
     p, v = procs[0]
-    return "%d processes using high CPU (top: %s at %s%%)" % (len(procs), p.get("name") or "unknown", round(v, 1))
+    nm = p.get("name") or "unknown"
+    known = mnorm.get(norm(nm), {}).get("publisher") not in ("", "Unknown", None)
+    if not known:
+        return "%d processes are using high CPU" % len(procs)
+    return "%d processes using high CPU (top: %s at %s%%)" % (len(procs), nm, round(v, 1))
 
 
 def proc_mem_msg(procs):
@@ -381,7 +385,11 @@ def proc_mem_msg(procs):
         known = mnorm.get(norm(nm), {}).get("publisher") not in ("", "Unknown", None)
         return "%s using %s%% of memory" % (nm, round(v, 1)) if known else "A process is using %s%% of memory" % round(v, 1)
     p, v = procs[0]
-    return "%d processes using high memory (top: %s at %s%%)" % (len(procs), p.get("name") or "unknown", round(v, 1))
+    nm = p.get("name") or "unknown"
+    known = mnorm.get(norm(nm), {}).get("publisher") not in ("", "Unknown", None)
+    if not known:
+        return "%d processes are using high memory" % len(procs)
+    return "%d processes using high memory (top: %s at %s%%)" % (len(procs), nm, round(v, 1))
 
 
 if cpu_procs:
