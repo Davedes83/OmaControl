@@ -38,7 +38,9 @@ esc() {
 #     interrupted migration); user_version is authoritative and idempotent.
 #     Each step only touches what the version says is missing, so fresh and
 #     legacy DBs converge on the same shape. Runners: the main CREATE/ALTER
-#     ladder lives here (single sqlite call per tick when stale). ---
+#     ladder lives here (single sqlite call per tick when stale), and the
+#     version is bumped ONLY after the full required column set verifies —
+#     a transiently failed ALTER can never leave a permanently-stuck schema. ---
 SCHEMA_VERSION=5
 SCHEMA_UV=$(sqlite3 -cmd ".timeout 1500" "$DB" "PRAGMA user_version;" 2>/dev/null)
 if [ -z "$SCHEMA_UV" ]; then
@@ -81,9 +83,11 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 SQL
 fi
-# Legacy DBs predate the disk/net columns; add each only when actually
-# missing (self-healing: an interrupted upgrade just retries next tick).
-if [ "$SCHEMA_UV" -lt 4 ]; then
+# Legacy DBs predate the disk/net columns; while the schema is behind the
+# current version, repair any missing columns on every tick — no matter which
+# version the DB claims. An ALTER can fail transiently (lock/IO), so the
+# repair MUST be re-attempted until the required shape verifies.
+if [ "$SCHEMA_UV" -lt "$SCHEMA_VERSION" ]; then
   HAS_DISK_COLS=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM pragma_table_info('metrics') WHERE name IN ('disk_io','disk_r','disk_w');" 2>/dev/null)
   if [ "$HAS_DISK_COLS" != "3" ]; then
     sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN disk_pct REAL;" 2>/dev/null || true
@@ -96,13 +100,17 @@ if [ "$SCHEMA_UV" -lt 4 ]; then
     sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_rx_bytes INTEGER;" 2>/dev/null || true
     sqlite3 -cmd ".timeout 1500" "$DB" "ALTER TABLE metrics ADD COLUMN net_tx_bytes INTEGER;" 2>/dev/null || true
   fi
-  sqlite3 -cmd ".timeout 1500" "$DB" "PRAGMA user_version = 4;" 2>/dev/null
-fi
-# Bump to the current schema version once the previous steps converged, and
-# drop the legacy marker so future readers never see it as authoritative.
-if [ "$SCHEMA_UV" -lt "$SCHEMA_VERSION" ]; then
-  sqlite3 -cmd ".timeout 1500" "$DB" "PRAGMA user_version = $SCHEMA_VERSION;" 2>/dev/null
-  rm -f "${DB}.schema_mark_v4"
+  # Only advance the version when the complete required set verifies;
+  # otherwise leave the version behind and exit so the repair retries next
+  # tick (self-healing). Drop the legacy marker once the version advances.
+  REQUIRED_COLS=$(sqlite3 -cmd ".timeout 1500" "$DB" "SELECT count(*) FROM pragma_table_info('metrics') WHERE name IN ('disk_pct','disk_io','disk_r','disk_w','net_rx_bytes','net_tx_bytes');" 2>/dev/null)
+  if [ "$REQUIRED_COLS" = "6" ]; then
+    sqlite3 -cmd ".timeout 1500" "$DB" "PRAGMA user_version = $SCHEMA_VERSION;" 2>/dev/null
+    rm -f "${DB}.schema_mark_v4"
+  else
+    echo "schema migration incomplete: metrics missing $((6 - ${REQUIRED_COLS:-0})) of 6 required columns" >&2
+    exit 1
+  fi
 fi
 
 # One-time WAL switch (persistent per-DB): readers (sample-json, rollups,

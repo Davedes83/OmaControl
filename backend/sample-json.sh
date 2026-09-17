@@ -353,23 +353,45 @@ if mrows:
     else:
         update_alert("gpu", False, "warning", "GPU usage at %s%%" % round(mrows[0][4] or 0), mrows[0][0])
 last_ts = snaps[-1]["ts"] if snaps else (mrows[0][0] if mrows else NOW)
-for p in p_list:
-    run = p.get("cpu") or 0
-    if run >= 80:
+# Process alerts are aggregated and keyed only by kind ("proc_cpu"/
+# "proc_mem"), not per process. A per-process key would make N offenders
+# write the same state slot and stomp one another's message (and let the win
+# of a later under-threshold process clear a live alert). Aggregating yields
+# one stable, bounded entry ("3 processes using high CPU") top-offender-first.
+cpu_procs = sorted([(p, p.get("cpu") or 0) for p in p_list if (p.get("cpu") or 0) >= 80],
+                   key=lambda x: -x[1])
+mem_procs = sorted([(p, p.get("mem") or 0) for p in p_list if (p.get("mem") or 0) >= 30],
+                   key=lambda x: -x[1])
+
+
+def proc_cpu_msg(procs):
+    if len(procs) == 1:
+        p, v = procs[0]
         nm = p.get("name") or "unknown"
         known = mnorm.get(norm(nm), {}).get("publisher") not in ("", "Unknown", None)
-        msg = "%s at %s%% CPU" % (nm, round(run, 1)) if known else "A process is using %s%% CPU" % round(run, 1)
-        update_alert("proc_cpu", True, "critical", msg, last_ts, priv=True)
-    else:
-        update_alert("proc_cpu", False, "critical", "", last_ts, priv=True)
-    run_mem = p.get("mem") or 0
-    if run_mem >= 30:
+        return "%s at %s%% CPU" % (nm, round(v, 1)) if known else "A process is using %s%% CPU" % round(v, 1)
+    p, v = procs[0]
+    return "%d processes using high CPU (top: %s at %s%%)" % (len(procs), p.get("name") or "unknown", round(v, 1))
+
+
+def proc_mem_msg(procs):
+    if len(procs) == 1:
+        p, v = procs[0]
         nm = p.get("name") or "unknown"
         known = mnorm.get(norm(nm), {}).get("publisher") not in ("", "Unknown", None)
-        msg = "%s using %s%% of memory" % (nm, round(run_mem, 1)) if known else "A process is using %s%% of memory" % round(run_mem, 1)
-        update_alert("proc_mem", True, "info", msg, last_ts, priv=True)
-    else:
-        update_alert("proc_mem", False, "info", "", last_ts, priv=True)
+        return "%s using %s%% of memory" % (nm, round(v, 1)) if known else "A process is using %s%% of memory" % round(v, 1)
+    p, v = procs[0]
+    return "%d processes using high memory (top: %s at %s%%)" % (len(procs), p.get("name") or "unknown", round(v, 1))
+
+
+if cpu_procs:
+    update_alert("proc_cpu", True, "critical", proc_cpu_msg(cpu_procs), last_ts, priv=True)
+else:
+    update_alert("proc_cpu", False, "critical", "", last_ts, priv=True)
+if mem_procs:
+    update_alert("proc_mem", True, "info", proc_mem_msg(mem_procs), last_ts, priv=True)
+else:
+    update_alert("proc_mem", False, "info", "", last_ts, priv=True)
 alerts = alerts[:16]
 try:
     tmp_path = state_path + ".tmp." + str(os.getpid())
