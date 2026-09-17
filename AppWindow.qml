@@ -6,7 +6,7 @@ import Quickshell.Wayland
 import qs.Commons
 import "Model.js" as Model
 
-// OmControl standalone app window (theme-aware). Shown via IPC openApp/closeApp.
+// OmaControl standalone app window (theme-aware). Shown via IPC openApp/closeApp.
 //
 // Tabs: Activity (live metric pills, zoomable history graph with hover tooltip +
 // click-to-drill, mini range selector, process list with search + sparklines),

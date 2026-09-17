@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""OmControl parameterized SQL writer.
+"""OmaControl parameterized SQL writer.
 
 Replaces hand-assembled `INSERT INTO events` / `INSERT INTO privacy_events`
 string concatenation across collect.sh / enforce.sh / app-action.sh /

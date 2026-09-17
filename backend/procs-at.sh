@@ -1,7 +1,7 @@
 #!/bin/sh
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$SELF_DIR/bootstrap.sh"
-# OmControl procs-at — given an epoch timestamp, returns the nearest recorded
+# OmaControl procs-at — given an epoch timestamp, returns the nearest recorded
 # per-process snapshot (top 20 by CPU at that minute) as a JSON array.
 # Usage: procs-at.sh <epoch_seconds>
 # Outputs [] when no snapshot is within the 150s tolerance (e.g. no data yet).

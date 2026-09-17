@@ -1,7 +1,7 @@
 #!/bin/sh
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$SELF_DIR/bootstrap.sh"
-# OmControl unread count for the top-bar bell — events whose sensitivity mode
+# OmaControl unread count for the top-bar bell — events whose sensitivity mode
 # is not "none", gated by the master Alerts ON/OFF flag.
 DATA_DIR="${OMCONTROL_DATA_DIR:-$HOME/.local/share/omcontrol}"
 DB="${OMCONTROL_DB:-$DATA_DIR/history.db}"

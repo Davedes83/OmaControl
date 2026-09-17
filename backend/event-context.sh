@@ -1,7 +1,7 @@
 #!/bin/sh
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$SELF_DIR/bootstrap.sh"
-# OmControl event-context — enrich a flagged event with full context:
+# OmaControl event-context — enrich a flagged event with full context:
 # system state at the moment (nearest metrics row), app metadata (app_meta),
 # and sibling-event counts. Called from the event detail popup.
 #

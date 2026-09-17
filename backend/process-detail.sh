@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""OmControl per-PID detail — maps a process name to every running instance
+"""OmaControl per-PID detail — maps a process name to every running instance
 with a /proc snapshot. Called on demand from the detail panel.
 
 Usage: process-detail.sh <name>

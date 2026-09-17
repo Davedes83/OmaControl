@@ -1,7 +1,7 @@
 #!/bin/sh
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$SELF_DIR/bootstrap.sh"
-# OmControl app-stats — aggregate per-app resource usage since tracking start,
+# OmaControl app-stats — aggregate per-app resource usage since tracking start,
 # derived from the proc_history snapshots. Prints one JSON object:
 #   {"name":..., "samples":N, "first_ts":S, "last_ts":S,
 #    "max_cpu":maxPct,"avg_cpu":avgPct,"max_mem_mb":maxMB,"avg_mem_mb":avgMB,

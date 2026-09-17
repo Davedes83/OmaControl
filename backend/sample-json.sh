@@ -1,5 +1,5 @@
 #!/bin/sh
-# OmControl sample-json — light DB snapshot for the standalone app window:
+# OmaControl sample-json — light DB snapshot for the standalone app window:
 # live values (latest metrics row), downsampled history rolls, enriched app
 # list (publisher/verified/permissions/disabled), persistent events log,
 # current-run permission badges, and alert-sensitivity preferences.

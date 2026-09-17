@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""OmControl shared alert-prefs helpers.
+"""OmaControl shared alert-prefs helpers.
 
 The legacy boolean prefs files (true meant "notify", but "toast" for New App
 Launch; false meant "none") must map to the same toast/notify/none strings

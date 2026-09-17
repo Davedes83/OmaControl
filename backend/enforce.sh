@@ -1,7 +1,7 @@
 #!/bin/sh
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$SELF_DIR/bootstrap.sh"
-# OmControl enforcement engine — reads rules.json and enforces persistent rules.
+# OmaControl enforcement engine — reads rules.json and enforces persistent rules.
 # Usage: enforce.sh [--dry-run]
 #   kind=app,     action=disable -> kill any matching process (kill-on-launch)
 #   kind=service, action=disable -> systemctl --user mask the unit (persistent)

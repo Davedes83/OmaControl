@@ -1,5 +1,5 @@
 #!/bin/sh
-# OmControl continuous sampler — keeps the history database filled even when
+# OmaControl continuous sampler — keeps the history database filled even when
 # no OmaControl UI is open. Runs collect.sh every 2 seconds in a tight loop
 # and re-applies enforcement rules roughly every 5 seconds.
 # Managed by the omcontrol-collect systemd --user service.

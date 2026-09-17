@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "davedes.omcontrol",
-  "name": "OmControl",
+  "name": "OmaControl",
   "version": "1.0.0",
   "author": "davedes",
   "description": "Advanced task manager with historical resource monitoring, process enforcement, privacy alerts, and plain-language process identification",
@@ -10,7 +10,7 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "OmControl",
+    "displayName": "OmaControl",
     "description": "System monitor with resource history, process control, and privacy alerts",
     "category": "System",
     "allowMultiple": false,

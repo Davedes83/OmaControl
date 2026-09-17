@@ -1,5 +1,5 @@
 #!/usr/bin/bash
-# OmControl CLI — query the historical task-manager database.
+# OmaControl CLI — query the historical task-manager database.
 #
 #   omcontrol status                 current sample + store summary
 #   omcontrol top [--history R] [--limit N]         busiest apps over last R

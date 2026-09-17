@@ -1,7 +1,7 @@
 #!/bin/sh
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$SELF_DIR/bootstrap.sh"
-# OmControl app-net — live TCP/UDP socket counts for one app (non-root):
+# OmaControl app-net — live TCP/UDP socket counts for one app (non-root):
 #   established (TCP ESTABLISHED), listening (TCP LISTEN), udp (UDP sockets).
 # Maps socket inodes from /proc/<pid>/fd/* into /proc/net/{tcp,tcp6,udp,udp6}.
 NAME="$1"

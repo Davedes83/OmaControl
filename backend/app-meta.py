@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""OmControl app metadata resolver — for each "pid name" line on stdin, fill in
+"""OmaControl app metadata resolver — for each "pid name" line on stdin, fill in
 the app_meta table (publisher, package, verified, description) using pacman /
 flatpak, caching results so resolution only happens once per app ever.
 

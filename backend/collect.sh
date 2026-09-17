@@ -1,5 +1,5 @@
 #!/bin/sh
-# OmControl data collector — outputs a single JSON blob with system metrics.
+# OmaControl data collector — outputs a single JSON blob with system metrics.
 # Called via Quickshell Process{} every 2s.
 #
 # All rate meters (CPU, per-core CPU, disk IO, network) share one 0.2s

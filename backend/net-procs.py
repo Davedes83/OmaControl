@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""OmControl per-process network attribution for the chart drill-down.
+"""OmaControl per-process network attribution for the chart drill-down.
 
 Runs `ss -tinp` and keeps a cumulative-byte baseline per socket-owning PID
 between snapshots; the minute-to-minute deltas become KB/s per process.

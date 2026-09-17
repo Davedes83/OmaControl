@@ -1,4 +1,4 @@
-// Data parsing + formatting for OmControl.
+// Data parsing + formatting for OmaControl.
 // Pure JS so it stays testable; all input is shell script JSON output.
 
 .pragma library

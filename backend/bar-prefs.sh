@@ -1,7 +1,7 @@
 #!/bin/sh
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$SELF_DIR/bootstrap.sh"
-# OmControl bar preferences. Usage: bar-prefs.sh set-show-bell <on|off>
+# OmaControl bar preferences. Usage: bar-prefs.sh set-show-bell <on|off>
 DATA_DIR="${OMCONTROL_DATA_DIR:-$HOME/.local/share/omcontrol}"
 FILE="${OMCONTROL_BAR_PREFS:-$DATA_DIR/barstats.json}"
 mkdir -p "$DATA_DIR"

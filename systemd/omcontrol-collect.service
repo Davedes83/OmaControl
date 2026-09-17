@@ -1,5 +1,5 @@
 [Unit]
-Description=OmControl continuous history sampler
+Description=OmaControl continuous history sampler
 Documentation=omcontrol status/top/history
 After=graphical-session.target
 PartOf=graphical-session.target
