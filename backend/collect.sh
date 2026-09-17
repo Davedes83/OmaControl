@@ -321,8 +321,12 @@ GPU_BUS=""
 GPU_ENC="0"
 GPU_DEC="0"
 GPU_MEM_CLOCK_MAX="0"
-if command -v nvidia-smi >/dev/null 2>&1; then
-  GPU_LINE=$(timeout 10 nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed,clocks.sm,utilization.encoder,utilization.decoder --format=csv,noheader,nounits 2>/dev/null | sed 's/\[N\/A\]/0/g' | tail -1)
+# OMC_NVIDIA_SMI lets tests point at a stub binary; production keeps the
+# default nvidia-smi resolved through the hardened PATH. The AMD sysfs
+# fallback below remains the standby when neither produces a value.
+NVIDIA_SMI="${OMC_NVIDIA_SMI:-nvidia-smi}"
+if command -v "$NVIDIA_SMI" >/dev/null 2>&1; then
+  GPU_LINE=$(timeout 10 "$NVIDIA_SMI" --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed,clocks.sm,utilization.encoder,utilization.decoder --format=csv,noheader,nounits 2>/dev/null | sed 's/\[N\/A\]/0/g' | tail -1)
   if [ -n "$GPU_LINE" ]; then
     GPU_PCT=$(echo "$GPU_LINE" | awk -F',' '{gsub(/ /,"",$1); print $1}')
     GPU_MEM=$(echo "$GPU_LINE" | awk -F',' '{gsub(/ /,"",$2); print $2}')
@@ -341,7 +345,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     if [ ! -f "$GPUXML" ] || [ -n "$(find "$GPUXML" -mmin +1 2>/dev/null)" ]; then
       GPUXML_TMP="$D/.omc_gpuxml_cache.tmp.$$"
       TMPFILES="$TMPFILES $GPUXML_TMP"
-      timeout 10 nvidia-smi -q -x 2>/dev/null >"$GPUXML_TMP"
+      timeout 10 "$NVIDIA_SMI" -q -x 2>/dev/null >"$GPUXML_TMP"
       [ -s "$GPUXML_TMP" ] && mv "$GPUXML_TMP" "$GPUXML"
     fi
     if [ -s "$GPUXML" ]; then

@@ -29,7 +29,7 @@ else
 fi
 
 FAILED=0
-for suite in schema-tests collector-tests prefs-tests enforce-tests; do
+for suite in schema-tests collector-tests prefs-tests enforce-tests gpu-tests; do
   echo "== $suite =="
   run_interp "$DIR/$suite.sh"
   rc=$?
