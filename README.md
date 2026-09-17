@@ -78,9 +78,11 @@ systemctl --user disable --now omcontrol-collect
 
 ## Development / Testing
 
-The test suite exercises the schema migration/repair paths and the collector
-end-to-end against throwaway databases — the user's real `history.db` is never
-touched. Run it under any shell you like:
+The test suite exercises the schema migration/repair paths, the collector
+end-to-end, `prefs.py` validation + lock/atomic-rename concurrency, and the
+enforcement dry-run contract (mocked systemctl) — all against throwaway
+state, so the user's real `history.db` is never touched. Run it under any
+shell you like:
 
 ```bash
 tests/run-tests.sh              # default: sh
@@ -89,7 +91,7 @@ tests/run-tests.sh bash --posix # bash in POSIX compatibility mode
 ```
 
 CI (`.github/workflows/ci.yml`) runs the suite under `dash`, `bash`, and
-`bash --posix`, plus static gates: shellcheck, `shfmt --check`, Python
+`bash --posix`, plus static gates: shellcheck, `shfmt --diff`, Python
 `compileall`, JSON validation, and a structural QML/JS bracket-balance check.
 `qmllint` runs as an informational step only — it needs the Quickshell module
 tree the CI image doesn't ship.

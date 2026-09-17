@@ -43,9 +43,10 @@ jobs:
           backend/collect.sh backend/enforce.sh backend/event-context.sh
           backend/events.sh backend/match-pids.sh backend/privacy.sh
           backend/process-info.sh backend/procs-at.sh backend/run-capped.sh
-          backend/sample-json.sh backend/schema.sh backend/unread.sh
-          omcontrol-poll.sh tests/lib.sh tests/schema-tests.sh
-          tests/collector-tests.sh tests/run-tests.sh
+          backend/sample-json.sh backend/schema.sh backend/unit-state.sh
+          backend/unread.sh omcontrol-poll.sh tests/lib.sh
+          tests/schema-tests.sh tests/collector-tests.sh tests/prefs-tests.sh
+          tests/enforce-tests.sh tests/run-tests.sh
 
       # omcontrol is authored as a bash-only CLI (#!/usr/bin/bash).
       - name: shellcheck (bash CLI)
@@ -61,9 +62,10 @@ jobs:
           backend/collect.sh backend/enforce.sh backend/event-context.sh
           backend/events.sh backend/match-pids.sh backend/privacy.sh
           backend/process-info.sh backend/procs-at.sh backend/run-capped.sh
-          backend/sample-json.sh backend/schema.sh backend/unread.sh
-          omcontrol-poll.sh tests/lib.sh tests/schema-tests.sh
-          tests/collector-tests.sh tests/run-tests.sh
+          backend/sample-json.sh backend/schema.sh backend/unit-state.sh
+          backend/unread.sh omcontrol-poll.sh tests/lib.sh
+          tests/schema-tests.sh tests/collector-tests.sh tests/prefs-tests.sh
+          tests/enforce-tests.sh tests/run-tests.sh
 
       - name: Python compileall
         run: python3 -m compileall -q backend && python3 -m py_compile backend/process-detail.sh tests/check-brackets.py
