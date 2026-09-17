@@ -59,7 +59,9 @@ def schema_ok(d):
         if not isinstance(d["stats"], list):
             return False
         for s in d["stats"]:
-            if not isinstance(s, dict) or not isinstance(s.get("name"), str):
+            if not isinstance(s, (str, dict)):
+                return False
+            if isinstance(s, dict) and not isinstance(s.get("name"), str):
                 return False
     if "mode" in d and d["mode"] not in ("name", "none"):
         return False
