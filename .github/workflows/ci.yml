@@ -41,7 +41,8 @@ jobs:
           backend/alert-prefs.sh backend/app-action.sh backend/app-net.sh
           backend/app-stats.sh backend/bar-prefs.sh backend/bootstrap.sh
           backend/collect.sh backend/enforce.sh backend/event-context.sh
-          backend/events.sh backend/match-pids.sh backend/privacy.sh
+          backend/events.sh backend/focus-browser.sh backend/match-pids.sh
+          backend/privacy.sh
           backend/process-info.sh backend/procs-at.sh backend/run-capped.sh
           backend/sample-json.sh backend/schema.sh backend/unit-state.sh
           backend/unread.sh omcontrol-poll.sh tests/lib.sh
@@ -61,7 +62,8 @@ jobs:
           backend/alert-prefs.sh backend/app-action.sh backend/app-net.sh
           backend/app-stats.sh backend/bar-prefs.sh backend/bootstrap.sh
           backend/collect.sh backend/enforce.sh backend/event-context.sh
-          backend/events.sh backend/match-pids.sh backend/privacy.sh
+          backend/events.sh backend/focus-browser.sh backend/match-pids.sh
+          backend/privacy.sh
           backend/process-info.sh backend/procs-at.sh backend/run-capped.sh
           backend/sample-json.sh backend/schema.sh backend/unit-state.sh
           backend/unread.sh omcontrol-poll.sh tests/lib.sh

@@ -466,6 +466,46 @@ PanelWindow {
     }
   }
 
+  // Build a Google query for an event: quoted app name, a symptom/kind term,
+  // the publisher (when known), and a "linux" scoping word so the search lands
+  // on relevant context rather than generic marketing pages.
+  function eventSearchQuery(ev) {
+    var kind = ev.kind || ""
+    var app = ev.app || ""
+    var pub = ev.publisher || ""
+    var term = ""
+    if (kind === "cpu_spike") term = "high cpu usage"
+    else if (kind === "mem_spike") term = "high memory usage"
+    else if (kind === "mic_access") term = "microphone access"
+    else if (kind === "cam_access") term = "camera access"
+    else if (kind === "location_access") term = "location access"
+    else if (kind === "publisher_block") term = "unsigned app blocked"
+    else if (kind === "unsigned_launch") term = "unsigned app launch"
+    else if (kind === "unknown_app") term = "unknown app process"
+    else if (kind === "suspicious_app") term = "suspicious app"
+    else if (kind === "service_change") term = "system service changed"
+    else if (kind === "service_launch") term = "system service launch"
+    else if (kind === "app_launch" || kind === "new_app") term = "new application launch"
+    else if (kind === "app_exit") term = "application exit"
+    else if (kind === "app_update") term = "application update"
+    else if (kind.indexOf("user_") !== 0) term = "linux system event"
+    var parts = []
+    if (app) parts.push('"' + app + '"')
+    if (term) parts.push(term)
+    if (pub && pub !== "Unknown") parts.push(pub)
+    parts.push("linux")
+    return parts.join(" ")
+  }
+
+  // Open the default browser on a Google search explaining this event. Hyprland
+  // leaves the new tab unfocused, so follow up with focus-browser.sh to bring
+  // the search window to the foreground.
+  function openEventSearch(ev) {
+    Qt.openUrlExternally("https://www.google.com/search?q="
+        + encodeURIComponent(root.eventSearchQuery(ev || {})))
+    root.runBackend("focus-browser.sh", [])
+  }
+
   // Merge the running apps with the known-apps catalog into one inventory,
   // apply the search + activity + disabled filters, and sort.
   function renderApps() {
@@ -3731,6 +3771,11 @@ instances: Number(modelData.instances) || 1
             visible: edp.hasApp && edp.ev.kind === "user_disable"
             label: "Enable"
             onChosen: edp.enable(edp.ev.app)
+          }
+          ActionChip {
+            visible: true
+            label: "Web Search"
+            onChosen: root.openEventSearch(edp.ev)
           }
         }
       }
