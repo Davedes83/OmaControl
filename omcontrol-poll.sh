@@ -29,6 +29,8 @@ DB="${OMCONTROL_DB:-$DATA_DIR/history.db}"
 FL=0
 I=0
 SLEEP=2
+LAST_OK=0
+LAST_FAIL=0
 while true; do
   # timeout guard with process-group termination: a wedged collector gets
   # SIGTERM on the whole group at the deadline and SIGKILL after a 2s grace,
@@ -39,6 +41,7 @@ while true; do
 
   if [ "$RC" -ne 0 ]; then
     FL=$((FL + 1))
+    LAST_FAIL=$(date +%s)
     if [ "$FL" -gt 4 ]; then
       SLEEP=30
     else
@@ -58,6 +61,7 @@ while true; do
     LTS=$(echo "$LIVE" | cut -d'|' -f1 2>/dev/null)
     LCPU=$(echo "$LIVE" | cut -d'|' -f2 2>/dev/null)
     NOW=$(date +%s)
+    LAST_OK=$NOW
     AGE=$((NOW - ${LTS:-0}))
     if [ -n "$LTS" ] && [ "$AGE" -le 8 ] && [ -n "$LCPU" ] && [ "${LCPU%.*}" -lt 15 ] 2>/dev/null; then
       SLEEP=5
@@ -65,6 +69,15 @@ while true; do
       SLEEP=2
     fi
   fi
+
+  # Collector health state for `omcontrol status`: last ok/fail stamps plus
+  # consecutive-failure count and current cadence. Atomic tmp+rename so the
+  # status reader can never observe a torn document.
+  HEALTH="$DB.health.json"
+  {
+    printf '{"last_ok_ts":%s,"last_fail_ts":%s,"failures":%s,"sleep":%s,"ts":%s}\n' \
+      "$LAST_OK" "$LAST_FAIL" "$FL" "$SLEEP" "$(date +%s)"
+  } >"$HEALTH.tmp.$$" 2>/dev/null && mv "$HEALTH.tmp.$$" "$HEALTH" 2>/dev/null
 
   if [ $((I % 3)) -eq 0 ]; then
     "$T" -k 2 15 /bin/sh "$SELF_DIR/backend/enforce.sh" >/dev/null 2>&1

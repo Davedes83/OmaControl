@@ -1,12 +1,14 @@
 #!/usr/bin/bash
 # OmaControl CLI — query the historical task-manager database.
 #
-#   omcontrol status                 current sample + store summary
-#   omcontrol top [--history R] [--limit N]         busiest apps over last R
-#   omcontrol top --from TS --to TS                 ... between timestamps
-#   omcontrol history [--metric M] [--seconds S] [--raw]   downsampled series
+#   omcontrol status [--json]         current sample + store/collector health
+#   omcontrol top [--history R] [--limit N] [--sort peak|cpu|mem|combined]
+#         [--json] [--csv]            busiest apps over last R
+#   omcontrol top --from TS --to TS   ... between timestamps
+#   omcontrol history [--metric M] [--seconds S] [--raw] [--json] [--csv]
+#                                     downsampled series
 #   omcontrol history --from TS --to TS             ... between  timestamps
-#   omcontrol procs-at TS           process snapshot nearest to timestamp
+#   omcontrol procs-at TS             process snapshot nearest to timestamp
 #   omcontrol rules                 list enforcement rules
 #   omcontrol rules add <name>      add a persistent disable rule (app)
 #   omcontrol rules rm <name>       remove a disable rule
@@ -14,9 +16,17 @@
 #   omcontrol events read-all|clear
 #   omcontrol alert-prefs get        show current alert notification preferences
 #   omcontrol alert-prefs set <type> toast|notify|none   set an alert type's mode
+#   omcontrol alert-prefs set-chart <type> on|off        chart marker toggle
 #   omcontrol alert-prefs set-enabled on|off  globally enable/disable alerts
+#   omcontrol alert-prefs set-profile mild|medium|severe alert sensitivity
+#   omcontrol alert-prefs set-threshold <metric> <value> tune one threshold
+#   omcontrol alert-prefs reset       restore defaults (medium, no overrides)
+#   omcontrol prune [--metrics S] [--procs S] [--events S]  drop old rows
+#   omcontrol vacuum                  checkpoint + VACUUM + ANALYZE
 #
-# R accepts 5m/30m/1h/6h/24h/3d. M = cpu|mem|gpu|gtemp|ctemp. TS = epoch seconds.
+# R accepts 5m/10m/30m/1h/6h/24h/3d. M = cpu|mem|gpu|gtemp|ctemp.
+# TS = epoch seconds. Prune windows default to the collector's retention
+# (7d metrics / 1d proc_history / 14d events) unless overridden.
 
 set -u
 SNIPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,6 +69,52 @@ require_db() {
 
 do_status() {
   require_db
+  local now
+  now=$(date +%s)
+  if [ "${1:-}" = "--json" ]; then
+    python3 - "$DB" "$now" <<'PY'
+import json, os, sqlite3, sys
+db, now = sys.argv[1], int(sys.argv[2])
+out = {"now": now, "db_path": db}
+try:
+    out["db_size_bytes"] = os.path.getsize(db)
+except OSError:
+    out["db_size_bytes"] = 0
+health = {}
+try:
+    health = json.load(open(db + ".health.json"))
+except Exception:
+    health = {}
+out["collector"] = health
+con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+row = con.execute(
+    "SELECT ts, cpu_pct, mem_used_mb, mem_total_mb, gpu_pct, gpu_temp, cpu_temp,"
+    " proc_count, (SELECT count(*) FROM metrics),"
+    " (SELECT count(*) FROM proc_history), (SELECT min(ts) FROM metrics)"
+    " FROM metrics ORDER BY ts DESC LIMIT 1;").fetchone()
+if row:
+    (ts, cpu, mem, memtot, gpu, gtemp, ctemp, procs,
+     nsamples, nsnaps, oldest) = row
+    out["last_ts"] = ts
+    out["sample_age"] = now - ts
+    out["next_expected_ts"] = ts + 2
+    out["collector_state"] = "healthy" if (now - ts) <= 20 else "stale"
+    out["cpu_pct"] = cpu
+    out["mem_mb"] = mem
+    out["mem_total_mb"] = memtot
+    out["gpu_pct"] = gpu
+    out["gpu_temp"] = gtemp
+    out["cpu_temp"] = ctemp
+    out["proc_count"] = procs
+    out["samples"] = nsamples
+    out["snapshots"] = nsnaps
+    out["oldest_ts"] = oldest
+else:
+    out["collector_state"] = "unknown"
+print(json.dumps(out))
+PY
+    return 0
+  fi
   local out
   out=$(sqlite3 -cmd ".timeout 1500" "$DB" "
     SELECT ts, cpu_pct, mem_used_mb, mem_total_mb, gpu_pct, gpu_temp, cpu_temp, proc_count,
@@ -77,17 +133,72 @@ do_status() {
   printf 'processes:   %s\n' "$procs"
   printf 'recorded:    %s samples, %s per-app snapshots\n' "$nsamples" "$nsnaps"
   printf 'oldest kept: %s\n' "$(date -d "@$oldest" '+%F %T')"
+  local age next_state fails nx
+  age=$((now - ts))
+  if [ "$age" -le 20 ]; then
+    next_state="healthy"
+  else
+    next_state="stale"
+  fi
+  fails=$(python3 - "$DB.health.json" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print(int(d.get("failures", 0)))
+except Exception:
+    print(0)
+PY
+)
+  nx=$((ts + 2 - now)); [ "$nx" -lt 0 ] && nx=0
+  printf 'sampled:     %ss ago (next expected ~%ss)\n' "$age" "$nx"
+  printf 'collector:   %s%s\n' "$next_state" "$([ "$fails" -gt 0 ] && printf ' — %s failed cycles' "$fails")"
+  local size
+  size=$(stat -c %s "$DB" 2>/dev/null || echo 0)
+  printf 'db:          %s\n' "$(if command -v numfmt >/dev/null 2>&1; then numfmt --to=iec "$size"; else echo "$size bytes"; fi)"
+}
+
+do_prune() {
+  require_db
+  local keep_metrics="${OMCONTROL_RETENTION_METRICS:-604800}"
+  local keep_procs="${OMCONTROL_RETENTION_PROCS:-86400}"
+  local keep_events="${OMCONTROL_RETENTION_EVENTS:-1209600}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --metrics) shift; require_int "$1"; keep_metrics="$1" ;;
+      --procs) shift; require_int "$1"; keep_procs="$1" ;;
+      --events) shift; require_int "$1"; keep_events="$1" ;;
+      *) shift ;;
+    esac
+  done
+  local now cutoff
+  now=$(date +%s)
+  sqlite3 -cmd ".timeout 1500" "$DB" "
+    DELETE FROM metrics WHERE ts < $((now - keep_metrics));
+    DELETE FROM proc_history WHERE ts < $((now - keep_procs));
+    DELETE FROM events WHERE ts < $((now - keep_events));
+    DELETE FROM privacy_events WHERE ts < $((now - keep_events));" || exit 1
+  printf 'pruned rows older than: %s metrics / %s proc_history / %s events\n' \
+    "$((now - keep_metrics))" "$((now - keep_procs))" "$((now - keep_events))"
+}
+
+do_vacuum() {
+  require_db
+  sqlite3 -cmd ".timeout 3000" "$DB" "PRAGMA wal_checkpoint(TRUNCATE); VACUUM; ANALYZE;" || exit 1
+  echo "vacuumed and analyzed $(stat -c %s "$DB" 2>/dev/null || echo '?') bytes"
 }
 
 do_top() {
   require_db
-  local range=3600 limit=20 from= to=
+  local range=3600 limit=20 from= to= sort=peak format=text
   while [ $# -gt 0 ]; do
     case "$1" in
       --history) shift; range=$(parse_range "$1") ;;
       --limit) shift; require_int "$1"; limit="$1" ;;
       --from) shift; require_int "$1"; from="$1" ;;
       --to) shift; require_int "$1"; to="$1" ;;
+      --sort) shift; case "$1" in peak|cpu|mem|combined) sort="$1" ;; *) shift ;; esac ;;
+      --json) shift; format=json ;;
+      --csv) shift; format=csv ;;
       *) shift ;;
     esac
   done
@@ -100,11 +211,15 @@ do_top() {
     from=$((now - range)); to=$now
   fi
   [ "$from" -le "$to" ] || { echo "error: --from ($from) is later than --to ($to)" >&2; exit 1; }
-  OMCONTROL_DB="$DB" python3 - "$from" "$to" "$limit" <<'PY'
+  OMCONTROL_DB="$DB" OMCONTROL_SORT="$sort" OMCONTROL_FORMAT="$format" python3 - "$from" "$to" "$limit" <<'PY'
 import json, os, sqlite3, sys
 db = os.environ["OMCONTROL_DB"]
 frm, to, limit = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+sort = os.environ.get("OMCONTROL_SORT", "peak")
+fmt = os.environ.get("OMCONTROL_FORMAT", "text")
 con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+mrow = con.execute("SELECT mem_total_mb FROM metrics ORDER BY ts DESC LIMIT 1").fetchone()
+memtot = mrow[0] if mrow and mrow[0] else 0
 rows = con.execute(
     "SELECT ts, procs FROM proc_history WHERE ts>=? AND ts<=? ORDER BY ts",
     (frm, to)).fetchall()
@@ -132,18 +247,45 @@ for ts, payload in rows:
             a[2] = max(a[2], cpu)
             a[3] += mem
         i += 1
-out = sorted(agg.items(), key=lambda kv: -kv[1][2])
-print(f"{'NAME':<28} {'AVG%':>7} {'PEAK%':>7} {'AVG %MEM':>9}  SNAPS")
-for name, (snaps, tot, peak, mem) in out[:limit]:
-    print(f"{name[:28]:<28} {tot/snaps:7.1f} {peak:7.1f} {mem/snaps:9.1f}  {snaps}")
-if not out:
-    print("No per-app snapshots recorded in that range (proc_history is empty).")
+def score(kv):
+    name, (snaps, tot, peak, mem) = kv
+    avg_cpu = tot / snaps if snaps else 0
+    avg_mem_pct = mem / snaps / (memtot or 1) * 100 if snaps else 0
+    return {"name": name, "snaps": snaps, "avg_cpu": round(avg_cpu, 1), "peak": peak,
+            "avg_mem_mb": round(mem / snaps, 1) if snaps else 0.0,
+            "avg_mem_pct": round(avg_mem_pct, 1),
+            "combined": round(avg_cpu + avg_mem_pct, 1)}
+out = [score(kv) for kv in agg.items()]
+if sort == "cpu":
+    out.sort(key=lambda x: -x["avg_cpu"])
+elif sort == "mem":
+    out.sort(key=lambda x: -x["avg_mem_mb"])
+elif sort == "combined":
+    out.sort(key=lambda x: -x["combined"])
+else:
+    out.sort(key=lambda x: -x["peak"])
+out = out[:limit]
+if fmt == "json":
+    print(json.dumps({"range_s": [frm, to], "apps": out}))
+elif fmt == "csv":
+    print("name,snaps,avg_cpu_pct,peak_cpu_pct,avg_mem_mb,avg_mem_pct,combined")
+    for o in out:
+        print("%s,%d,%.1f,%.1f,%.1f,%.1f,%.1f" % (
+            o["name"], o["snaps"], o["avg_cpu"], o["peak"], o["avg_mem_mb"],
+            o["avg_mem_pct"], o["combined"]))
+else:
+    print(f"{'NAME':<28} {'AVG%':>7} {'PEAK%':>7} {'AVG %MEM':>9}  SNAPS")
+    for o in out:
+        print("%-28s %7.1f %7.1f %9.1f  %d" % (
+            (o["name"])[:28], o["avg_cpu"], o["peak"], o["avg_mem_pct"], o["snaps"]))
+    if not out:
+        print("No per-app snapshots recorded in that range (proc_history is empty).")
 PY
 }
 
 do_history() {
   require_db
-  local metric=cpu seconds=3600 raw=0 from= to=
+  local metric=cpu seconds=3600 raw=0 from= to= fmt=text
   while [ $# -gt 0 ]; do
     case "$1" in
       --metric) shift; metric="$1" ;;
@@ -151,6 +293,8 @@ do_history() {
       --raw) shift; raw=1 ;;
       --from) shift; require_int "$1"; from="$1" ;;
       --to) shift; require_int "$1"; to="$1" ;;
+      --json) shift; fmt=json ;;
+      --csv) shift; fmt=csv ;;
       *) shift ;;
     esac
   done
@@ -172,14 +316,35 @@ do_history() {
   fi
   [ "$t0" -le "$t1" ] || { echo "error: --from ($t0) is later than --to ($t1)" >&2; exit 1; }
   local bin=$((seconds / 120)); [ "$bin" -lt 60 ] && bin=60
+  local query
+  query="SELECT ts, round(v, 1) FROM
+         (SELECT (ts/$bin)*$bin ts, $col AS v FROM metrics WHERE ts > $t0 AND ts <= $t1 GROUP BY ts/$bin ORDER BY ts);"
+  if [ "$fmt" = "json" ] || [ "$fmt" = "csv" ]; then
+    FMT="$fmt" python3 - "$DB" "$t0" "$t1" "$bin" "$metric" "$col" <<'PY'
+import json, os, sqlite3, sys
+db, t0, t1, bsize, metric, col = \
+    sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5], sys.argv[6]
+fmt = os.environ.get("FMT", "text")
+con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+rows = []
+for ts, v in con.execute(
+        "SELECT (ts/%d)*%d AS ts, round(%s, 1) AS v FROM metrics"
+        " WHERE ts > %d AND ts <= %d GROUP BY ts/%d ORDER BY ts"
+        % (bsize, bsize, col, t0, t1, bsize)):
+    rows.append({"ts": int(ts), "value": float(v or 0), "metric": metric})
+if fmt == "json":
+    print(json.dumps(rows))
+else:
+    print("ts,value")
+    for r in rows:
+        print("%d,%.1f" % (r["ts"], r["value"]))
+PY
+    return 0
+  fi
   if [ "$raw" -eq 1 ]; then
-    sqlite3 -cmd ".timeout 1500" "$DB" "
-      SELECT ts, round(v, 1) FROM
-        (SELECT (ts/$bin)*$bin ts, $col AS v FROM metrics WHERE ts > $t0 AND ts <= $t1 GROUP BY ts/$bin ORDER BY ts);"
+    sqlite3 -cmd ".timeout 1500" "$DB" "$query"
   else
-    sqlite3 -cmd ".timeout 1500" "$DB" "
-      SELECT ts, round(v, 1) FROM
-        (SELECT (ts/$bin)*$bin ts, $col AS v FROM metrics WHERE ts > $t0 AND ts <= $t1 GROUP BY ts/$bin ORDER BY ts);" \
+    sqlite3 -cmd ".timeout 1500" "$DB" "$query" \
       | while IFS='|' read -r ts v; do
           printf '%s  %s\n' "$(date -d "@$ts" '+%H:%M')" "$v"
         done
@@ -196,15 +361,28 @@ do_alert_prefs() {
   local sub="${1:-get}" type="${2:-}" value="${3:-}"
   case "$sub" in
     get) "$SNIPS_DIR/backend/alert-prefs.sh" get ;;
+    reset) "$SNIPS_DIR/backend/alert-prefs.sh" reset ;;
     set)
       [ -n "$type" ] && [ -n "$value" ] || { echo "usage: omcontrol alert-prefs set <type> toast|notify|none" >&2; exit 1; }
       "$SNIPS_DIR/backend/alert-prefs.sh" set "$type" "$value"
+      ;;
+    set-chart)
+      [ -n "$type" ] && [ -n "$value" ] || { echo "usage: omcontrol alert-prefs set-chart <type> on|off" >&2; exit 1; }
+      "$SNIPS_DIR/backend/alert-prefs.sh" set-chart "$type" "$value"
       ;;
     set-enabled)
       [ -n "$type" ] || { echo "usage: omcontrol alert-prefs set-enabled on|off" >&2; exit 1; }
       "$SNIPS_DIR/backend/alert-prefs.sh" set-enabled "$type"
       ;;
-    *) echo "usage: omcontrol alert-prefs <get|set TYPE toast|notify|none|set-enabled on|off>" >&2; exit 1 ;;
+    set-profile)
+      [ -n "$type" ] || { echo "usage: omcontrol alert-prefs set-profile mild|medium|severe" >&2; exit 1; }
+      "$SNIPS_DIR/backend/alert-prefs.sh" set-profile "$type"
+      ;;
+    set-threshold)
+      [ -n "$type" ] && [ -n "$value" ] || { echo "usage: omcontrol alert-prefs set-threshold <metric> <value>" >&2; exit 1; }
+      "$SNIPS_DIR/backend/alert-prefs.sh" set-threshold "$type" "$value"
+      ;;
+    *) echo "usage: omcontrol alert-prefs <get|set TYPE toast|notify|none|set-chart TYPE on|off|set-enabled on|off|set-profile mild|medium|severe|set-threshold METRIC VALUE|reset>" >&2; exit 1 ;;
   esac
 }
 
@@ -283,11 +461,13 @@ cmd="${1:-}"
 shift || true
 
 case "$cmd" in
-  status) do_status ;;
+  status) do_status "$@" ;;
   top) do_top "$@" ;;
   history) do_history "$@" ;;
   procs-at) do_procs_at "$@" ;;
   rules) do_rules "$@" ;;
+  prune) do_prune "$@" ;;
+  vacuum) do_vacuum "$@" ;;
   events) do_events "$@" ;;
   alert-prefs) do_alert_prefs "$@" ;;
   app) do_app "$@" ;;

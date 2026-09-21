@@ -681,6 +681,16 @@ RECENT_APPS=$(tail -20 "$NEWAPPS_LOG" | tail -5 | awk '{gsub(/["\\]/, " ", $2); 
 
 rm -f "$DATA_DIR/.cur_names.$$" "$DATA_DIR/.new_names.$$" "$DATA_DIR/.promote.$$" "$DATA_DIR/.fresh.$$"
 
+# --- Active alert thresholds (profile + resolved limits), fed to the bar the
+#     same way sample-json.sh feeds the app window, so the bar bell and the
+#     collector's sustained alerts always use the same numbers.
+PREFS="${OMCONTROL_ALERT_PREFS:-$DATA_DIR/alert_prefs.json}"
+THRESHOLDS_OUT=$(OMC_BACKEND="$SELF_DIR" python3 "$SELF_DIR/omc-thresholds.py" "$PREFS" 2>/dev/null || true)
+ALERT_PROFILE=$(printf '%s\n' "$THRESHOLDS_OUT" | sed -n '1p')
+THRESHOLDS_JSON=$(printf '%s\n' "$THRESHOLDS_OUT" | sed -n '2p')
+[ -n "$ALERT_PROFILE" ] || ALERT_PROFILE=medium
+[ -n "$THRESHOLDS_JSON" ] || THRESHOLDS_JSON='{}'
+
 # Prunes and metric-spike events are folded into the single sqlite3 call above.
 
 # --- Output JSON ---
@@ -750,7 +760,9 @@ rm -f "$DATA_DIR/.cur_names.$$" "$DATA_DIR/.new_names.$$" "$DATA_DIR/.promote.$$
   "ts": $NOW,
   "processes": [$PROCS],
   "new_apps": $NEW_APPS,
-  "recent_apps": $RECENT_APPS
+  "recent_apps": $RECENT_APPS,
+  "alert_profile": "$ALERT_PROFILE",
+  "alert_thresholds": $THRESHOLDS_JSON
 }
 ENDJSON
 } | /usr/bin/head -c "${OMCONTROL_MAX_OUT_BYTES:-1048576}" 2>/dev/null

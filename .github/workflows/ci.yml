@@ -46,6 +46,7 @@ jobs:
           backend/sample-json.sh backend/schema.sh backend/unit-state.sh
           backend/unread.sh omcontrol-poll.sh tests/lib.sh
           tests/schema-tests.sh tests/collector-tests.sh tests/prefs-tests.sh
+          tests/alert-prefs-tests.sh
           tests/enforce-tests.sh tests/gpu-tests.sh tests/run-tests.sh
 
       # omcontrol is authored as a bash-only CLI (#!/usr/bin/bash).
@@ -65,6 +66,7 @@ jobs:
           backend/sample-json.sh backend/schema.sh backend/unit-state.sh
           backend/unread.sh omcontrol-poll.sh tests/lib.sh
           tests/schema-tests.sh tests/collector-tests.sh tests/prefs-tests.sh
+          tests/alert-prefs-tests.sh
           tests/enforce-tests.sh tests/gpu-tests.sh tests/run-tests.sh
 
       - name: Python compileall

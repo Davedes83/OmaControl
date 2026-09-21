@@ -148,6 +148,7 @@ else
 fi
 
 export OMC_DB="$DB" OMC_NOW="$NOW" OMC_DISABLED="$DISABLED" OMC_PREFS="$ALERT_PREFS"
+export OMC_BACKEND="$SELF_DIR"
 # Final payload is piped through a hard byte cap as a last resort; a runaway
 # producer must never be able to retain unbounded output in the long-lived
 # shell. Real payloads are far smaller than the 256 KB ceiling.
@@ -158,6 +159,23 @@ from collections import defaultdict
 
 NOW = int(os.environ["OMC_NOW"])
 con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=3)
+
+# ---- active alert thresholds: same single source as collect.sh/Model.js.
+# omc_prefs.resolve_thresholds maps the named profile + per-metric overrides
+# from alert_prefs.json into the concrete numbers the hysteresis below uses.
+sys.path.insert(0, os.environ.get("OMC_BACKEND", ""))
+_TH_DEFAULTS = {"cpu_pct": 90, "mem_pct": 85, "gpu_pct": 80, "cpu_temp": 85,
+                "gpu_temp": 85, "proc_cpu_pct": 80, "proc_mem_pct": 30,
+                "hold": 90}
+try:
+    from omc_prefs import alert_profile, resolve_thresholds
+    _prefsobj = json.loads(os.environ.get("OMC_PREFS", "{}") or "{}")
+    TH = resolve_thresholds(_prefsobj)
+    ALERT_PROFILE = alert_profile(_prefsobj)
+except Exception:
+    TH = dict(_TH_DEFAULTS)
+    ALERT_PROFILE = "medium"
+TH_HOLD = int(float(TH.get("hold", 90)))
 
 # ---- per-app metadata cache
 meta = {}
@@ -312,11 +330,13 @@ def sustained(fn):
             over += 1
     return over >= 2 and bool(mrows) and fn(mrows[0])
 
-def update_alert(kind, firing, severity, msg, ts, priv=False, hold=90):
+def update_alert(kind, firing, severity, msg, ts, priv=False, hold=None):
     st = state.get(kind, {})
     on = bool(st.get("on"))
     since = st.get("since")
     last_msg = st.get("msg", "")
+    if hold is None:
+        hold = TH_HOLD
     if firing:
         if not on or not since:
             since = ts
@@ -339,13 +359,13 @@ mrows = con.execute("SELECT ts, cpu_pct, mem_used_mb, mem_total_mb, gpu_pct FROM
                     "ORDER BY ts DESC LIMIT 3").fetchall()
 
 def mem_fn(r):
-    return r[2] * 100.0 / (r[3] or 1) >= 85
+    return r[2] * 100.0 / (r[3] or 1) >= TH["mem_pct"]
 
 def cpu_fn(r):
-    return (r[1] or 0) >= 90
+    return (r[1] or 0) >= TH["cpu_pct"]
 
 def gpu_fn(r):
-    return (r[4] or 0) >= 80
+    return (r[4] or 0) >= TH["gpu_pct"]
 
 if mrows:
     amem = mrows[0][2] * 100.0 / (mrows[0][3] or 1)
@@ -367,9 +387,9 @@ last_ts = snaps[-1]["ts"] if snaps else (mrows[0][0] if mrows else NOW)
 # write the same state slot and stomp one another's message (and let the win
 # of a later under-threshold process clear a live alert). Aggregating yields
 # one stable, bounded entry ("3 processes using high CPU") top-offender-first.
-cpu_procs = sorted([(p, p.get("cpu") or 0) for p in p_list if (p.get("cpu") or 0) >= 80],
+cpu_procs = sorted([(p, p.get("cpu") or 0) for p in p_list if (p.get("cpu") or 0) >= TH["proc_cpu_pct"]],
                    key=lambda x: -x[1])
-mem_procs = sorted([(p, p.get("mem") or 0) for p in p_list if (p.get("mem") or 0) >= 30],
+mem_procs = sorted([(p, p.get("mem") or 0) for p in p_list if (p.get("mem") or 0) >= TH["proc_mem_pct"]],
                    key=lambda x: -x[1])
 
 
@@ -474,6 +494,8 @@ print(json.dumps({
     "alerts": alerts,
     "events": events,
     "alert_prefs": jload(os.environ.get("OMC_PREFS", "{}"), {}),
+    "alert_profile": ALERT_PROFILE,
+    "alert_thresholds": {k: float(v) for k, v in TH.items()},
     "disabled": disabled,
     "perms": {k: v for k, v in perms.items()},
 }))

@@ -22,6 +22,8 @@ An Omarchy shell plugin (Quickshell, Hyprland) that turns your top-bar icon into
 - **Privacy-tier alerts** — process-level spikes are toggleable via the "App Activity" sensitivity, so the window can stop naming specific processes
 - **Per-process network attribution** — optional toggle; turning it off hides the per-process net column entirely (instead of showing zeroes)
 - **Adaptive sampling + stale indicator** — the bar back-off when idle and warns when fresh data stops arriving
+- **Configurable alert sensitivity** — alert thresholds resolve from a single model (mild / medium / severe profiles, with per-metric overrides) shared by the bar, app window, and CLI; switch from the Settings tab or `omcontrol alert-prefs set-profile <mild|medium|severe>`
+- **Self-healing config + storage** — a corrupt `alert_prefs.json` / `barstats.json` is quarantined to `<file>.corrupt` (with a warning) instead of silently passing bad state, and alert-prefs writes are atomic; collector health is tracked so `omcontrol status` reports healthy/stale/failed sampling
 
 ## Installation
 
@@ -55,7 +57,7 @@ when the shell is closed, enable the hardened user service (fixed `PATH`,
 systemctl --user enable --now ~/.config/omarchy/plugins/davedes.omcontrol/systemd/omcontrol-collect.service
 ```
 
-Verify: `systemctl --user status omcontrol-collect` and `omacontrol status`.
+Verify: `systemctl --user status omcontrol-collect` and `omcontrol status`.
 
 ## Usage
 
@@ -63,7 +65,7 @@ Verify: `systemctl --user status omcontrol-collect` and `omacontrol status`.
 - **Middle-click** — refresh sample
 - **Right-click** — context menu (jump to tab, enforce rules, kill top process)
 
-Also ships a CLI: `omacontrol status`, `omacontrol top --history 30m`, `omacontrol app kill <name>`, and more — run `omacontrol --help` for the full list.
+Also ships a CLI — `omcontrol status [--json]`, `omcontrol top [--history 30m] [--sort peak|cpu|mem|combined] [--json|--csv]`, `omcontrol history [--metric cpu] [--seconds 300] [--json|--csv]`, `omcontrol app kill <name>`, `omcontrol prune [--metrics|--procs|--events]`, `omcontrol vacuum`, and `omcontrol alert-prefs ...` — run `omcontrol --help` for the full list.
 
 ## Remove
 
@@ -80,10 +82,11 @@ systemctl --user disable --now omcontrol-collect
 ## Development / Testing
 
 The test suite exercises the schema migration/repair paths, the collector
-end-to-end, `prefs.py` validation + lock/atomic-rename concurrency, and the
-enforcement dry-run contract (mocked systemctl) — all against throwaway
-state, so the user's real `history.db` is never touched. Run it under any
-shell you like:
+end-to-end, `prefs.py` validation + lock/atomic-rename concurrency, corruption
+quarantine for both preference stores, alert-threshold profile/override
+resolution, and the enforcement dry-run contract (mocked systemctl) — all
+against throwaway state, so the user's real `history.db` is never touched.
+Run it under any shell you like:
 
 ```bash
 tests/run-tests.sh              # default: sh

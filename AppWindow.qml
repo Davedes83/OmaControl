@@ -47,6 +47,7 @@ PanelWindow {
                           history_1h: [], history_6h: [], history_1d: [],
                           p_list: [], snaps: [], apps: [], catalog: [],
                           alerts: [], events: [], alert_prefs: {},
+                          alert_profile: "medium", alert_thresholds: {},
                           disabled: [], perms: {} })
   property string selMetric: "cpu"
   property int chartWindow: 3600
@@ -104,6 +105,8 @@ PanelWindow {
   property int alertBadge: 0
   property int eventBadge: 0
   property var alertPrefs: ({ enabled: true, types: {}, charts: {} })
+  property string alertProfile: "medium"
+  property var alertThresholds: ({})
   property var detailApp: null
   property var eventDetail: null
   property var detailStats: null
@@ -769,6 +772,8 @@ PanelWindow {
 
   function onSampleReceived() {
     root.alertPrefs = root.sample.alert_prefs || { enabled: true, types: {}, charts: {} }
+    root.alertProfile = root.sample.alert_profile || "medium"
+    root.alertThresholds = root.sample.alert_thresholds || {}
     root.renderList()
     root.renderApps()
     root.updateBadges()
@@ -787,6 +792,11 @@ PanelWindow {
   function clearEvents() { root.runBackend("events.sh", ["clear"]); missingNsTimer() }
   function setAlertPref(type, mode) { root.runBackend("alert-prefs.sh", ["set", type, mode]) }
   function setAlertsEnabled(on) { root.runBackend("alert-prefs.sh", ["set-enabled", on ? "on" : "off"]) }
+  function setAlertProfile(p) {
+    root.alertProfile = p
+    root.runBackend("alert-prefs.sh", ["set-profile", p])
+    root.refreshSoon()
+  }
   function setAlertMode(type, mode) {
     var types = {}; var src = root.alertPrefs.types || {}
     for (var k in src) types[k] = src[k]
@@ -2329,6 +2339,85 @@ instances: Number(modelData.instances) || 1
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
+            }
+
+            // ---- Alert sensitivity: profile + resolved thresholds, shared
+            // with the collector (sustained alerts) and the bar bell.
+            Text {
+              text: "ALERT SENSITIVITY"
+              color: root.fg
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.body
+              font.bold: true
+              font.letterSpacing: 1
+            }
+
+            Text {
+              width: parent.width
+              wrapMode: Text.WordWrap
+              text: "A profile sets every resource alert threshold at once (CPU, memory, GPU, temperatures, runaway processes, hysteresis window). Fine-tune any value from the CLI: omcontrol alert-prefs set-threshold <metric> <value>."
+              color: root.dim1
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Row {
+              spacing: Style.space(6)
+              component SensPill: Rectangle {
+                id: spp
+                property bool active: false
+                property string label: ""
+                property var action: null
+                width: sensPillText.implicitWidth + Style.space(20)
+                height: Style.space(28)
+                radius: Style.space(12)
+                border.width: 1
+                border.color: spp.active ? root.accent : root.dim1
+                color: (sensPillArea.containsMouse || spp.active) ? root.accentSoft : "transparent"
+                Text {
+                  id: sensPillText
+                  anchors.centerIn: parent
+                  text: spp.label
+                  color: spp.active ? root.accent : root.dim1
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+                MouseArea {
+                  id: sensPillArea
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: if (spp.action) spp.action()
+                }
+              }
+              SensPill { label: "Mild"; active: root.alertProfile === "mild"; action: function() { root.setAlertProfile("mild") } }
+              SensPill { label: "Medium"; active: root.alertProfile === "medium"; action: function() { root.setAlertProfile("medium") } }
+              SensPill { label: "Severe"; active: root.alertProfile === "severe"; action: function() { root.setAlertProfile("severe") } }
+            }
+
+            Flow {
+              visible: Object.keys(root.alertThresholds).length > 0
+              width: parent.width
+              spacing: Style.space(6)
+              Repeater {
+                model: ["cpu_pct", "mem_pct", "gpu_pct", "cpu_temp", "gpu_temp", "proc_cpu_pct", "proc_mem_pct", "hold"]
+                delegate: Rectangle {
+                  width: chipText.implicitWidth + Style.space(14)
+                  height: Style.space(24)
+                  radius: Style.space(12)
+                  color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.07)
+                  Text {
+                    id: chipText
+                    anchors.centerIn: parent
+                    text: modelData + " " + String(root.alertThresholds[modelData] != null
+                        ? Math.round(root.alertThresholds[modelData]) : "--")
+                    color: root.dim1
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+              }
             }
 
             // ---- Support / Buy Me a Coffee (same pattern as the mouse &

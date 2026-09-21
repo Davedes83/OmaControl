@@ -136,21 +136,32 @@ function barStatLabel(id) {
 }
 
 // ---- alert detection
+// Thresholds are read from the data itself (data.alert_thresholds — emitted
+// by collect.sh / sample-json.sh from alert_prefs.json via backend/omc_prefs.py).
+// The defaults below mirror that "medium" profile as a safety fallback so the
+// bar keeps working even if a payload predates the thresholds field.
+
+function alertThresholds(data) {
+  if (data && data.alert_thresholds) return data.alert_thresholds
+  return { cpu_pct: 90, cpu_temp: 85, gpu_temp: 85 }
+}
 
 function hasAlert(data) {
   if (!data) return false
-  if (data.cpu_pct > 90) return true
-  if (data.cpu_temp > 85) return true
-  if (data.gpu_temp > 85) return true
+  var th = alertThresholds(data)
+  if (data.cpu_pct > th.cpu_pct) return true
+  if (data.cpu_temp > th.cpu_temp) return true
+  if (data.gpu_temp > th.gpu_temp) return true
   return false
 }
 
 function alertReason(data) {
   if (!data) return ""
+  var th = alertThresholds(data)
   var reasons = []
-  if (data.cpu_pct > 90) reasons.push("High CPU")
-  if (data.cpu_temp > 85) reasons.push("CPU hot")
-  if (data.gpu_temp > 85) reasons.push("GPU hot")
+  if (data.cpu_pct > th.cpu_pct) reasons.push("High CPU")
+  if (data.cpu_temp > th.cpu_temp) reasons.push("CPU hot")
+  if (data.gpu_temp > th.gpu_temp) reasons.push("GPU hot")
   return reasons.join(", ")
 }
 

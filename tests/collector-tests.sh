@@ -76,6 +76,12 @@ data = json.load(open(sys.argv[1]))
 for key in ("ts", "cpu_pct", "mem_used_mb", "proc_count", "processes"):
     if key not in data:
         sys.exit("collect #1: JSON missing key %r" % key)
+for key in ("alert_profile", "alert_thresholds"):
+    if key not in data:
+        sys.exit("collect #1: JSON missing key %r" % key)
+th = data.get("alert_thresholds") or {}
+if "hold" not in th or not th.get("cpu_pct"):
+    sys.exit("collect #1: alert_thresholds incomplete")
 PY
 rc=$?
 check_eq "collect #1: JSON parses with core keys" "0" "$rc"
@@ -88,6 +94,20 @@ import json, sys
 json.load(open(sys.argv[1]))
 PY
 check_eq "collect #2 (steady state): JSON parses" "0" "$?"
+
+# Threshold selection flows from alert_prefs.json: a stored profile must be
+# reflected in the resolved thresholds the collector emits.
+export OMCONTROL_ALERT_PREFS="$T/alert_prefs.json"
+run_interp "$ROOT/backend/alert-prefs.sh" set-profile severe >/dev/null 2>&1
+run_interp "$ROOT/backend/collect.sh" >"$T/out3.json" 2>"$T/out3.err"
+python3 - "$T/out3.json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+assert data.get("alert_profile") == "severe", data.get("alert_profile")
+assert data["alert_thresholds"]["mem_pct"] == 75.0, data["alert_thresholds"]
+PY
+check_eq "collect: profile change flows into emitted thresholds" "0" "$?"
+unset OMCONTROL_ALERT_PREFS
 
 # Transients are named with a `.<name>.$$` PID suffix, so any remaining file
 # whose basename ends in a digit is an uncleaned temp. mindepth 1 keeps the
@@ -102,9 +122,12 @@ if [ "$rcs" -eq 0 ]; then
   python3 - "$T/sample.json" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1]))
-for key in ("cpu", "mem", "procs", "apps", "events", "alert_prefs"):
+for key in ("cpu", "mem", "procs", "apps", "events", "alert_prefs",
+            "alert_profile", "alert_thresholds"):
     if key not in data:
         sys.exit("sample-json: JSON missing key %r" % key)
+if "hold" not in (data.get("alert_thresholds") or {}):
+    sys.exit("sample-json: alert_thresholds incomplete")
 PY
   check_eq "sample-json: JSON parses with core keys" "0" "$?"
 else

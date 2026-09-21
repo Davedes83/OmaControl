@@ -41,12 +41,46 @@ def open_lock(path):
     return open(lockp, "a+b")
 
 
+def _quarantine(path, why):
+    """Preserve a corrupt store before anything can overwrite it.
+
+    A single .corrupt copy (written once per path) plus a stderr warning lets
+    a corrupt barstats.json fail loudly instead of being silently replaced by
+    a near-empty write that discards user prefs.
+    """
+    try:
+        if os.path.exists(path + ".corrupt"):
+            pass
+        else:
+            with open(path, "rb") as f:
+                blob = f.read()
+            with open(path + ".corrupt", "wb") as b:
+                b.write(blob)
+    except Exception:
+        return
+    print("warning: %s is corrupt (%s); preserved a copy at %s.corrupt and "
+          "reading empty prefs" % (path, why, path), file=sys.stderr)
+
+
 def read_json(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
+            text = f.read()
+    except FileNotFoundError:
         return {}
+    except OSError as e:
+        print("warning: %s unreadable (%s); using empty prefs" % (path, e),
+              file=sys.stderr)
+        return {}
+    try:
+        data = json.loads(text)
+    except Exception as e:
+        _quarantine(path, "invalid JSON (%s)" % e)
+        return {}
+    if not schema_ok(data):
+        _quarantine(path, "schema validation failed")
+        return {}
+    return data
 
 
 def schema_ok(d):
