@@ -20,11 +20,21 @@ BarWidget {
   property int unreadCount: 0
   property string bellColorToken: "dim"
 
-  // Color matches the event-kind hue used for chart markers (HistoryGraph.evColor).
+  // Matches the "ok" semantic green used by AppWindow's trust chips / event
+  // roles: #3FB950 blended 22% toward the live accent so the bar bell and the
+  // window agree and both track the theme. Mirrors AppWindow's tinted().
+  function tintedOk() {
+    var base = Qt.rgba(0x3f / 255, 0xb9 / 255, 0x50 / 255, 1)
+    var accent = Color.accent
+    var t = 0.22
+    return Qt.rgba(base.r + (accent.r - base.r) * t,
+                   base.g + (accent.g - base.g) * t,
+                   base.b + (accent.b - base.b) * t, 1)
+  }
   readonly property color bellColor: {
     switch (root.bellColorToken) {
       case "danger": return root.bar && root.bar.urgent ? root.bar.urgent : Color.urgent
-      case "green": return Qt.rgba(0.24, 0.7, 0.44, 1)
+      case "green": return root.tintedOk()
       case "accent": return Color.accent
       default: return root.bar && root.bar.foreground ? root.bar.foreground : Color.foreground
     }

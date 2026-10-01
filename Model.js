@@ -192,16 +192,33 @@ function parsePrivacy(text) {
 // ---- event kind styling (category color + glyph, shared by EventRow and
 // EventDetailPanel so the list and the detail view always agree)
 
-function eventTypeColor(kind) {
-  if (!kind) return "#94a3b8"
-  if (kind === "app_launch" || kind === "new_app") return "#22c55e" // green
-  if (kind === "app_exit") return "#94a3b8" // gray
-  if (kind === "cpu_spike" || kind === "mem_spike") return "#ef4444" // red
-  if (kind === "mic_access" || kind === "cam_access" || kind === "location_access") return "#3b82f6" // blue
+// Event kinds map to a semantic ROLE rather than a fixed color, so the QML
+// layer can resolve the role against the live Omarchy theme (see
+// AppWindow's `eventColor`) while these functions stay pure JS with no
+// access to the Color singleton. `eventTypeColor` remains for back-compat.
+function eventRole(kind) {
+  if (!kind) return "neutral"
+  if (kind === "app_launch" || kind === "new_app") return "ok"
+  if (kind === "app_exit") return "neutral"
+  if (kind === "cpu_spike" || kind === "mem_spike") return "danger"
+  if (kind === "mic_access" || kind === "cam_access" || kind === "location_access") return "info"
   if (kind === "publisher_block" || kind === "unsigned_launch" || kind === "unknown_app"
-      || kind === "suspicious_app") return "#f59e0b" // amber
-  if (kind.indexOf("user_") === 0) return "#8b5cf6" // purple
-  return "#94a3b8"
+      || kind === "suspicious_app") return "warn"
+  if (kind.indexOf("user_") === 0) return "action"
+  return "neutral"
+}
+
+// Back-compat: role -> the historical fixed hex. The app window no longer
+// uses this for paint (it resolves the role through the theme instead).
+function eventTypeColor(kind) {
+  switch (eventRole(kind)) {
+    case "ok": return "#22c55e"
+    case "danger": return "#ef4444"
+    case "info": return "#3b82f6"
+    case "warn": return "#f59e0b"
+    case "action": return "#8b5cf6"
+    default: return "#94a3b8"
+  }
 }
 
 function eventIcon(kind) {

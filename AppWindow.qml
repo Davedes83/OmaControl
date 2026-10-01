@@ -4,6 +4,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
+import qs.Ui
 import "Model.js" as Model
 
 // OmaControl standalone app window (theme-aware). Shown via IPC openApp/closeApp.
@@ -40,6 +41,58 @@ PanelWindow {
   readonly property color dim1: Qt.darker(fg, 1.35)
   readonly property color dim2: Qt.darker(fg, 1.7)
   readonly property color accentSoft: Qt.rgba(accent.r, accent.g, accent.b, 0.14)
+
+  // ---- Semantic palette -------------------------------------------------
+  // Trust / severity / event-kind colors used to be hardcoded hexes (green
+  // #3fbf6f, amber #e0a030, Tailwind event hues). They read as pasted-in on
+  // some themes. Each role is a fixed hue nudged a fraction toward the live
+  // accent so the family feels native to the palette while the per-kind
+  // distinctions (verified vs unsigned, launch vs spike vs mic) survive.
+  // `soft` fills are the low-alpha chip/tint backgrounds.
+  function mixColor(a, b, t) {
+    t = Math.max(0, Math.min(1, t))
+    return Qt.rgba(a.r + (b.r - a.r) * t,
+                   a.g + (b.g - a.g) * t,
+                   a.b + (b.b - a.b) * t,
+                   a.a + (b.a - a.a) * t)
+  }
+  // Base role colours are explicit sRGB values (not Qt.hsla) so the result is
+  // predictable across Qt builds: ok #3FB950, warn #D29922, info #58A6FF,
+  // action #BC8CFF. Each is blended 22% toward the live accent so the family
+  // sits in the theme while the per-kind distinctions survive.
+  function tinted(hex) {
+    var r = parseInt(hex.substr(1, 2), 16) / 255
+    var g = parseInt(hex.substr(3, 2), 16) / 255
+    var b = parseInt(hex.substr(5, 2), 16) / 255
+    return root.mixColor(Qt.rgba(r, g, b, 1), root.accent, 0.22)
+  }
+  function softColor(c, a) { return Qt.rgba(c.r, c.g, c.b, a === undefined ? 0.16 : a) }
+
+  readonly property color ok: root.tinted("#3FB950")
+  readonly property color warn: root.tinted("#D29922")
+  readonly property color info: root.tinted("#58A6FF")
+  readonly property color action: root.tinted("#BC8CFF")
+  readonly property color danger: root.urgent
+  readonly property color neutral: root.muted
+
+  readonly property color okSoft: root.softColor(ok)
+  readonly property color warnSoft: root.softColor(warn)
+  readonly property color infoSoft: root.softColor(info)
+  readonly property color dangerSoft: root.softColor(urgent)
+
+  // Readable text color for a filled surface (perceived-luminance test), so
+  // a light accent on a light theme still gets dark-on-fill text instead of
+  // the white-on-white that a fixed "#FFFFFF" produced.
+  readonly property color onAccent: root.onColor(accent)
+  function onColor(bg) {
+    var lum = 0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b
+    return lum > 0.6 ? Qt.rgba(0.06, 0.06, 0.07, 1) : Qt.rgba(1, 1, 1, 1)
+  }
+
+  // Border specs for the app's card + tooltip surfaces, resolved once from the
+  // theme's [popups] / [tooltip] roles so they honor per-theme border styling.
+  readonly property var cardBorderSpec: Border.localOrSurfaceSpec("popups", "border", surfaceBorder, Color.popups.border, Math.max(1, Style.space(2)))
+  readonly property var tipBorderSpec: Border.localOrSurfaceSpec("tooltip", "border", Color.tooltip.border, Color.tooltip.border, Style.normalBorderWidth)
 
   // ---- Data (DB snapshot via sample-json.sh) ----
   property var sample: ({ cpu: 0, mem: 0, gpu: 0, procs: 0, disk: 0, disk_r: 0, disk_w: 0,
@@ -150,6 +203,33 @@ PanelWindow {
     { v: "disk", label: "Disk I/O" },
     { v: "net", label: "Net" }
   ]
+
+  // ---- Shared right-hand column model -------------------------------
+  // The process/app tables used to hard-code each column's offset from the
+  // right edge as a magic number repeated across ColHeader, ProcRow and
+  // AppRow (Style.space(40)/112/176/240/312/380/476). Defining the geometry
+  // once here keeps the header labels and the data cells in lockstep and makes
+  // a column a one-line change. `right` is the inset from the row's right edge
+  // (to the column's trailing edge), `width` the column's width.
+  readonly property var procColumns: [
+    { key: "cpu",   label: "CPU",   right: Style.space(40),  width: Style.space(60) },
+    { key: "mem",   label: "MEM",   right: Style.space(112), width: Style.space(48) },
+    { key: "gpu",   label: "GPU",   right: Style.space(176), width: Style.space(48) },
+    { key: "disk",  label: "DISK",  right: Style.space(240), width: Style.space(56) },
+    { key: "net",   label: "NET",   right: Style.space(312), width: Style.space(56) },
+    { key: "trend", label: "TREND", right: Style.space(380), width: Style.space(96) },
+    { key: "pid",   label: "PID",   right: Style.space(476), width: Style.space(60) }
+  ]
+  function colRight(key) {
+    for (var i = 0; i < root.procColumns.length; i++)
+      if (root.procColumns[i].key === key) return root.procColumns[i].right
+    return 0
+  }
+  function colWidth(key) {
+    for (var i = 0; i < root.procColumns.length; i++)
+      if (root.procColumns[i].key === key) return root.procColumns[i].width
+    return 0
+  }
   readonly property var filteredAlerts: root.computeAlerts()
   readonly property int activeAlertCount: root.filteredAlerts.length
 
@@ -414,11 +494,29 @@ PanelWindow {
     return Qt.formatDateTime(new Date(ts * 1000), "yyyy-MM-dd HH:mm:ss")
   }
 
-  function eventTypeColor(kind) { return Model.eventTypeColor(kind) }
-  // Canvas2D can't alpha-blend the hex strings Model.js returns, so convert
-  // "#RRGGBB" → "rgba(r,g,b,a)" for translucent strokes.
-  function hexRgba(hex, alpha) {
-    var h = String(hex || "#888888").replace("#", "")
+  // Semantic color for an event kind, resolved against the live theme. The
+  // kind -> role mapping lives in Model.js (pure JS, no Color singleton); the
+  // role -> themed color resolution happens here.
+  function eventColor(kind) {
+    switch (Model.eventRole(kind)) {
+      case "ok": return root.ok
+      case "danger": return root.urgent
+      case "info": return root.info
+      case "warn": return root.warn
+      case "action": return root.action
+      default: return root.neutral
+    }
+  }
+  // Back-compat alias; new paint paths use eventColor().
+  function eventTypeColor(kind) { return root.eventColor(kind) }
+  // Canvas2D can't alpha-blend a QML color directly, so convert to an
+  // "rgba(r,g,b,a)" string. Accepts either a QML color or a "#RRGGBB" hex.
+  function hexRgba(col, alpha) {
+    if (col && typeof col === "object" && col.r !== undefined)
+      return "rgba(" + Math.round(col.r * 255) + ","
+          + Math.round(col.g * 255) + ","
+          + Math.round(col.b * 255) + "," + alpha + ")"
+    var h = String(col || "#888888").replace("#", "")
     if (h.length < 6) h = "888888"
     return "rgba(" + parseInt(h.substring(0, 2), 16) + ","
         + parseInt(h.substring(2, 4), 16) + ","
@@ -1102,25 +1200,25 @@ PanelWindow {
   }
 
   // ================================================================ UI
-  // Scrim: outside-click closes.
-  Item {
+  // Scrim: themed dim wash behind the modal card; outside-click closes.
+  Rectangle {
     anchors.fill: parent
     z: 0
+    color: Color.menu.scrim
     TapHandler {
       onTapped: root.open = false
     }
   }
 
-  Rectangle {
+  BorderSurface {
     id: card
     z: 1
     width: Math.min(root.compact ? Style.space(900) : Style.space(1100), root.width - Style.space(40))
     height: Math.min(root.compact ? Style.space(170) : Style.space(740), root.height - Style.space(40))
     anchors.centerIn: parent
-    radius: Style.cornerRadius || 12
+    radius: Style.cornerRadius
     color: root.surface
-    border.width: 1
-    border.color: root.surfaceBorder
+    borderSpec: root.cardBorderSpec
     clip: true
     Behavior on height { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
     Behavior on width { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
@@ -1133,65 +1231,58 @@ PanelWindow {
       anchors.fill: parent
       spacing: 0
 
-      // ==================== Top bar
+      // ==================== Top bar (PanelHero)
       Item {
         Layout.fillWidth: true
         Layout.preferredHeight: root.compact ? Style.space(48) : Style.space(64)
 
-        Row {
+        PanelHero {
+          id: headerHero
           anchors.left: parent.left
           anchors.leftMargin: Style.space(18)
+          anchors.right: parent.right
+          anchors.rightMargin: Style.space(18)
           anchors.verticalCenter: parent.verticalCenter
-          spacing: Style.space(10)
-          Rectangle {
-            width: Style.space(34)
-            height: Style.space(34)
-            radius: Style.space(12)
-            color: root.accentSoft
-            border.width: 1
-            border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.5)
-            Text {
-              anchors.centerIn: parent
-              text: "\uf201"
-              color: root.accent
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.body
+          title: "OmaControl"
+          // Uppercased meta line (letterSpacing comes from PanelHero) carries the
+          // rotating tagline, so the header reads with the same rhythm as the
+          // first-party Omarchy panels.
+          meta: root.compact ? "MONITORING" : root.subtitleText
+          foreground: root.fg
+          fontFamily: root.contentFontFamily
+          iconComponent: Component {
+            Item {
+              width: Style.space(34)
+              height: Style.space(34)
+              BorderSurface {
+                anchors.fill: parent
+                radius: Style.cornerRadius
+                color: root.accentSoft
+                borderSpec: Border.flat(Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.5), 1)
+              }
+              Text {
+                anchors.centerIn: parent
+                text: "\uf201"
+                color: root.accent
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.title
+              }
             }
           }
-          Column {
-            spacing: Style.space(1)
-            Text {
-              text: "OmaControl"
-              color: root.fg
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.title
-              font.bold: true
+          trailingControl: Component {
+            OMCPill {
+              label: root.compact ? "\uf065  Expand" : "\uf066  Compact"
+              active: false
+              onChosen: root.compact = !root.compact
             }
-            Text {
-              visible: !root.compact
-              text: root.subtitleText
-              color: root.dim2
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.caption
-            }
-          }
-        }
-
-        Row {
-          anchors.centerIn: parent
-          spacing: Style.space(6)
-          OMCPill {
-            label: root.compact ? "\uf065  Expand" : "\uf066  Compact"
-            active: false
-            onChosen: root.compact = !root.compact
           }
         }
       }
 
-      Item {
+      PanelSeparator {
         Layout.fillWidth: true
         Layout.preferredHeight: 1
-        Rectangle { anchors.fill: parent; color: root.surfaceBorder; opacity: 0.35 }
+        foreground: root.fg
       }
 
       // ==================== Body (pages)
@@ -1211,14 +1302,14 @@ PanelWindow {
             visible: !root.compact
             anchors.top: parent.top
             anchors.left: parent.left
-            spacing: Style.space(16)
+            spacing: Style.space(12)
 
-            OMCPill { label: "CPU"; value: root.liveValue("cpu") + "%"; active: root.selMetric === "cpu"; onChosen: { root.selMetric = "cpu"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
-            OMCPill { label: "Memory"; value: root.liveValue("mem") + "%"; active: root.selMetric === "mem"; onChosen: { root.selMetric = "mem"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
-            OMCPill { label: "GPU"; value: root.liveValue("gpu") + "%"; active: root.selMetric === "gpu"; onChosen: { root.selMetric = "gpu"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
-            OMCPill { label: "Processes"; value: Math.round(root.liveValue("procs")); active: root.selMetric === "procs"; onChosen: { root.selMetric = "procs"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
-            OMCPill { label: "Disk"; value: "\u2193 " + root.fmtNet(root.sample.disk_r) + "  \u2191 " + root.fmtNet(root.sample.disk_w); active: root.selMetric === "disk"; onChosen: { root.selMetric = "disk"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
-            OMCPill { label: "Net"; value: root.liveValue("net"); active: root.selMetric === "net"; onChosen: { root.selMetric = "net"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "CPU"; value: root.liveValue("cpu") + "%"; active: root.selMetric === "cpu"; hero: root.selMetric === "cpu"; onChosen: { root.selMetric = "cpu"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "Memory"; value: root.liveValue("mem") + "%"; active: root.selMetric === "mem"; hero: root.selMetric === "mem"; onChosen: { root.selMetric = "mem"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "GPU"; value: root.liveValue("gpu") + "%"; active: root.selMetric === "gpu"; hero: root.selMetric === "gpu"; onChosen: { root.selMetric = "gpu"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "Processes"; value: Math.round(root.liveValue("procs")); active: root.selMetric === "procs"; hero: root.selMetric === "procs"; onChosen: { root.selMetric = "procs"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "Disk"; value: "\u2193 " + root.fmtNet(root.sample.disk_r) + "  \u2191 " + root.fmtNet(root.sample.disk_w); active: root.selMetric === "disk"; hero: root.selMetric === "disk"; onChosen: { root.selMetric = "disk"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "Net"; value: root.liveValue("net"); active: root.selMetric === "net"; hero: root.selMetric === "net"; onChosen: { root.selMetric = "net"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
           }
 
           Row {
@@ -1834,13 +1925,13 @@ instances: Number(modelData.instances) || 1
               spacing: Style.space(6)
               Rectangle {
                 width: parent.width; height: Style.space(30); radius: Style.space(12)
-                color: Qt.rgba(0.878, 0.627, 0.188, 0.10)
+                color: Qt.rgba(root.warn.r, root.warn.g, root.warn.b, 0.10)
                 border.width: 1
-                border.color: Qt.rgba(0.878, 0.627, 0.188, 0.45)
+                border.color: Qt.rgba(root.warn.r, root.warn.g, root.warn.b, 0.45)
                 Text {
                   anchors.left: parent.left; anchors.leftMargin: Style.space(10); anchors.verticalCenter: parent.verticalCenter
                   text: "Notify me"
-                  color: "#e0a030"
+                  color: root.warn
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.body
                   font.bold: true
@@ -1910,13 +2001,13 @@ instances: Number(modelData.instances) || 1
               spacing: Style.space(6)
               Rectangle {
                 width: parent.width; height: Style.space(30); radius: Style.space(12)
-                color: Qt.rgba(0.36, 0.55, 0.95, 0.10)
+                color: Qt.rgba(root.info.r, root.info.g, root.info.b, 0.10)
                 border.width: 1
-                border.color: Qt.rgba(0.36, 0.55, 0.95, 0.45)
+                border.color: Qt.rgba(root.info.r, root.info.g, root.info.b, 0.45)
                 Text {
                   anchors.left: parent.left; anchors.leftMargin: Style.space(10); anchors.verticalCenter: parent.verticalCenter
                   text: "Chart marker"
-                  color: "#6f9cff"
+                  color: root.info
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.body
                   font.bold: true
@@ -2095,13 +2186,10 @@ instances: Number(modelData.instances) || 1
               width: settingsFlick.width
               spacing: Style.space(10)
 
-            Text {
+            PanelSectionHeader {
               text: "BAR ICON STATS"
-              color: root.fg
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.body
-              font.bold: true
-              font.letterSpacing: 1
+              foreground: root.fg
+              fontFamily: root.contentFontFamily
             }
 
             Text {
@@ -2123,49 +2211,19 @@ instances: Number(modelData.instances) || 1
                 font.bold: true
                 anchors.verticalCenter: parent.verticalCenter
               }
-              Rectangle {
-                width: Style.space(64); height: Style.space(26); radius: Style.space(12)
-                border.width: 1
-                border.color: root.barPrefs.mode === "name" ? root.accent : root.dim1
-                color: (setNameModeArea.containsMouse || root.barPrefs.mode === "name")
-                    ? root.accentSoft : "transparent"
-                Text {
-                  anchors.centerIn: parent
-                  text: "Name"
-                  color: root.barPrefs.mode === "name" ? root.accent : root.dim1
-                  font.family: root.contentFontFamily
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                }
-                MouseArea {
-                  id: setNameModeArea
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.setBarPrefMode("name")
-                }
-              }
-              Rectangle {
-                width: Style.space(64); height: Style.space(26); radius: Style.space(12)
-                border.width: 1
-                border.color: root.barPrefs.mode === "none" ? root.accent : root.dim1
-                color: (setNoneModeArea.containsMouse || root.barPrefs.mode === "none")
-                    ? root.accentSoft : "transparent"
-                Text {
-                  anchors.centerIn: parent
-                  text: "None"
-                  color: root.barPrefs.mode === "none" ? root.accent : root.dim1
-                  font.family: root.contentFontFamily
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                }
-                MouseArea {
-                  id: setNoneModeArea
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.setBarPrefMode("none")
-                }
+              ButtonGroup {
+                id: barModeGroup
+                anchors.verticalCenter: parent.verticalCenter
+                options: [
+                  { value: "name", label: "Name" },
+                  { value: "none", label: "None" }
+                ]
+                value: root.barPrefs.mode === "none" ? "none" : "name"
+                foreground: root.fg
+                background: root.surface
+                accent: root.accent
+                fontFamily: root.contentFontFamily
+                onChanged: function(v) { root.setBarPrefMode(v) }
               }
             }
 
@@ -2383,13 +2441,15 @@ instances: Number(modelData.instances) || 1
 
             // ---- Alert sensitivity: profile + resolved thresholds, shared
             // with the collector (sustained alerts) and the bar bell.
-            Text {
+            PanelSeparator {
+              width: parent.width
+              foreground: root.fg
+            }
+
+            PanelSectionHeader {
               text: "ALERT SENSITIVITY"
-              color: root.fg
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.body
-              font.bold: true
-              font.letterSpacing: 1
+              foreground: root.fg
+              fontFamily: root.contentFontFamily
             }
 
             Text {
@@ -2462,13 +2522,15 @@ instances: Number(modelData.instances) || 1
 
             // ---- Support / Buy Me a Coffee (same pattern as the mouse &
             // keybind settings plugin; hidden via the toggle below).
-            Text {
+            PanelSeparator {
+              width: parent.width
+              foreground: root.fg
+            }
+
+            PanelSectionHeader {
               text: "SUPPORT"
-              color: root.fg
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.body
-              font.bold: true
-              font.letterSpacing: 1
+              foreground: root.fg
+              fontFamily: root.contentFontFamily
             }
 
             Rectangle {
@@ -2582,10 +2644,10 @@ instances: Number(modelData.instances) || 1
         }
       }
 
-      Item {
+      PanelSeparator {
         Layout.fillWidth: true
         Layout.preferredHeight: 1
-        Rectangle { anchors.fill: parent; color: root.surfaceBorder; opacity: 0.35 }
+        foreground: root.fg
       }
 
       // ==================== Bottom nav
@@ -2666,32 +2728,40 @@ instances: Number(modelData.instances) || 1
 
   // Shared rounded-pill: used by the Activity MET selectors (label + optional
   // live value), the Apps filter row and the Alerts config chips — one shape
-  // everywhere.
-  component OMCPill: Rectangle {
+  // everywhere. A BorderSurface so the border tracks the theme, with hover
+  // feedback and a luminance-aware label color (white only when the fill is
+  // actually dark, so a light accent on a light theme stays legible).
+  component OMCPill: BorderSurface {
     id: pill
     property bool active: false
+    property bool hero: false
     property string label: ""
     property string value: ""
     property color pillColor: root.accent
+    property bool hovered: false
     signal chosen()
     radius: height / 2
-    height: pill.value === "" ? Style.space(28) : Style.space(44)
+    height: pill.value === "" ? Style.space(28) : (pill.hero ? Style.space(62) : Style.space(44))
     width: pill.value === ""
         ? Math.max(pillLabel.implicitWidth + Style.space(20), Style.space(40))
-        : Math.max(Style.space(116), Math.min(Style.space(170), pillValue.implicitWidth + Style.space(24)))
+        : Math.max(pill.hero ? Style.space(128) : Style.space(116),
+                   Math.min(pill.hero ? Style.space(190) : Style.space(170),
+                            pillValue.implicitWidth + Style.space(24)))
     color: pill.active
         ? pill.pillColor
-        : Qt.rgba(pill.pillColor.r, pill.pillColor.g, pill.pillColor.b, 0.12)
-    border.width: 1
-    border.color: pill.active
-        ? pill.pillColor
-        : Qt.rgba(pill.pillColor.r, pill.pillColor.g, pill.pillColor.b, 0.35)
+        : Qt.rgba(pill.pillColor.r, pill.pillColor.g, pill.pillColor.b,
+                 pill.hovered ? 0.22 : (pill.hero ? 0.18 : 0.12))
+    borderSpec: pill.active
+        ? Border.flat(pill.pillColor, 1)
+        : Border.flat(Qt.rgba(pill.pillColor.r, pill.pillColor.g, pill.pillColor.b,
+                             pill.hovered ? 0.55 : (pill.hero ? 0.6 : 0.35)),
+                      pill.hero ? 2 : 1)
     Text {
       id: pillLabel
       visible: pill.value === ""
       anchors.centerIn: parent
       text: pill.label
-      color: pill.active ? "#FFFFFF" : root.dim2
+      color: pill.active ? root.onColor(pill.pillColor) : root.dim2
       font.family: root.contentFontFamily
       font.pixelSize: Style.font.caption
     }
@@ -2702,7 +2772,7 @@ instances: Number(modelData.instances) || 1
       Text {
         anchors.horizontalCenter: parent.horizontalCenter
         text: pill.label
-        color: pill.active ? "#FFFFFF" : root.dim2
+        color: pill.active ? root.onColor(pill.pillColor) : root.dim2
         font.family: root.contentFontFamily
         font.pixelSize: Style.font.caption
       }
@@ -2710,9 +2780,11 @@ instances: Number(modelData.instances) || 1
         id: pillValue
         anchors.horizontalCenter: parent.horizontalCenter
         text: pill.value
-        color: pill.active ? "#FFFFFF" : root.fg
+        color: pill.active ? root.onColor(pill.pillColor) : root.fg
         font.family: root.contentFontFamily
-        font.pixelSize: Style.font.heading
+        // The selected metric's value renders at display size — the AppControl
+        // "hero number" effect — so the eye lands on the metric being charted.
+        font.pixelSize: pill.hero ? Style.font.display : Style.font.heading
         font.bold: true
         elide: Text.ElideRight
         width: pill.width - Style.space(16)
@@ -2723,6 +2795,8 @@ instances: Number(modelData.instances) || 1
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
+      onEntered: pill.hovered = true
+      onExited: pill.hovered = false
       onClicked: pill.chosen()
     }
   }
@@ -2744,6 +2818,7 @@ instances: Number(modelData.instances) || 1
     property string value: ""
     property bool open: false
     property string prefix: "Sort"
+    property bool hot: false
     signal chosen(var v)
     width: Style.space(158)
     height: Style.space(30)
@@ -2755,15 +2830,14 @@ instances: Number(modelData.instances) || 1
       return ""
     })()
 
-    Rectangle {
+    BorderSurface {
       id: smBtn
       anchors.fill: parent
-      radius: Style.space(12)
-      color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
-      border.width: 1
-      border.color: sm.open
-          ? root.accent
-          : Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.4)
+      radius: Style.cornerRadius
+      color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, sm.hot ? 0.2 : 0.12)
+      borderSpec: sm.open
+          ? Border.flat(root.accent, Style.selectedBorderWidth > 0 ? 1 : Style.hoverBorderWidth)
+          : Border.flat(Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, sm.hot ? 0.6 : 0.4), 1)
       Text {
         anchors.left: parent.left
         anchors.leftMargin: Style.space(10)
@@ -2777,14 +2851,17 @@ instances: Number(modelData.instances) || 1
         elide: Text.ElideRight
       }
       MouseArea {
+        id: smArea
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
+        onEntered: sm.hot = true
+        onExited: sm.hot = false
         onClicked: sm.open = !sm.open
       }
     }
 
-    Rectangle {
+    BorderSurface {
       visible: sm.open
       anchors.top: smBtn.bottom
       anchors.topMargin: Style.space(4)
@@ -2793,9 +2870,8 @@ instances: Number(modelData.instances) || 1
       width: Style.space(182)
       height: smContent.implicitHeight + Style.space(8)
       color: root.surface
-      radius: Style.space(10)
-      border.width: 1
-      border.color: root.surfaceBorder
+      radius: Style.cornerRadius
+      borderSpec: root.cardBorderSpec
       MouseArea {
         anchors.fill: parent
         onClicked: sm.open = false
@@ -2811,12 +2887,15 @@ instances: Number(modelData.instances) || 1
         Repeater {
           model: sm.options
           delegate: Rectangle {
+            id: smOpt
             width: parent.width
             height: Style.space(26)
-            radius: Style.space(7)
+            radius: Style.cornerRadius
             color: modelData.v === sm.value
                 ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
-                : "transparent"
+                : (smOptArea.containsMouse
+                    ? Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
+                    : "transparent")
             Text {
               anchors.left: parent.left
               anchors.leftMargin: Style.space(8)
@@ -2827,6 +2906,7 @@ instances: Number(modelData.instances) || 1
               font.pixelSize: Style.font.caption
             }
             MouseArea {
+              id: smOptArea
               anchors.fill: parent
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
@@ -2849,6 +2929,7 @@ instances: Number(modelData.instances) || 1
     property bool active: false
     signal chosen()
     color: "transparent"
+    property bool hovered: false
 
     Item {
       id: ntBody
@@ -2856,14 +2937,18 @@ instances: Number(modelData.instances) || 1
       width: Math.max(ntIcon.implicitWidth, ntLabel.implicitWidth)
       height: ntIcon.height + Style.space(2) + ntLabel.height
 
-      // Filled pill behind the icon + label for the active tab.
+      // Filled pill behind the icon + label for the active tab; a lighter
+      // hover-cursor tint takes over when the tab is not the current one.
       Rectangle {
-        visible: nt.active
+        visible: nt.active || nt.hovered
         anchors.centerIn: parent
         width: ntBody.width + Style.space(16)
         height: Style.space(32)
         radius: height / 2
-        color: root.accentSoft
+        color: nt.active
+            ? root.accentSoft
+            : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
+        Behavior on color { ColorAnimation { duration: 60 } }
       }
 
       Text {
@@ -2871,7 +2956,7 @@ instances: Number(modelData.instances) || 1
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.top: parent.top
         text: nt.iconText
-        color: nt.active ? root.accent : root.dim1
+        color: nt.active ? root.accent : (nt.hovered ? root.fg : root.dim1)
         font.family: root.contentFontFamily
         font.pixelSize: Style.font.body
       }
@@ -2901,7 +2986,7 @@ instances: Number(modelData.instances) || 1
         anchors.top: ntIcon.bottom
         anchors.topMargin: Style.space(2)
         text: nt.label
-        color: nt.active ? root.accent : root.dim2
+        color: nt.active ? root.accent : (nt.hovered ? root.dim1 : root.dim2)
         font.family: root.contentFontFamily
         font.pixelSize: Style.font.caption
       }
@@ -2911,6 +2996,8 @@ instances: Number(modelData.instances) || 1
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
+      onEntered: nt.hovered = true
+      onExited: nt.hovered = false
       onClicked: nt.chosen()
     }
   }
@@ -2919,23 +3006,25 @@ instances: Number(modelData.instances) || 1
     id: chip
     property string label: ""
     property bool danger: false
+    property bool hovered: false
     signal chosen()
     width: Style.space(16) + chipText.implicitWidth
     height: Style.space(22)
-    Rectangle {
+    BorderSurface {
       anchors.fill: parent
-      radius: Style.space(12)
-      color: chip.danger ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.14)
-                         : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
-      border.width: 1
-      border.color: chip.danger ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.4)
-                                : Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.25)
+      radius: height / 2
+      color: chip.danger
+          ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, chip.hovered ? 0.24 : 0.14)
+          : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, chip.hovered ? 0.2 : 0.12)
+      borderSpec: chip.danger
+          ? Border.flat(Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, chip.hovered ? 0.7 : 0.4), 1)
+          : Border.flat(Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, chip.hovered ? 0.45 : 0.25), 1)
     }
     Text {
       id: chipText
       anchors.centerIn: parent
       text: chip.label
-      color: chip.danger ? root.urgent : root.dim1
+      color: chip.danger ? root.urgent : root.fg
       font.family: root.contentFontFamily
       font.pixelSize: Style.font.caption
     }
@@ -2943,6 +3032,8 @@ instances: Number(modelData.instances) || 1
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
+      onEntered: chip.hovered = true
+      onExited: chip.hovered = false
       onClicked: chip.chosen()
     }
   }
@@ -2951,6 +3042,7 @@ instances: Number(modelData.instances) || 1
     id: ar
     property var app: ({})
     property bool actionsOpen: false
+    property bool hovered: false
     signal kill(string name)
     signal enable(string name)
     signal disable(string name)
@@ -2962,18 +3054,22 @@ instances: Number(modelData.instances) || 1
     implicitHeight: rowH + (ar.actionsOpen ? Style.space(30) : 0)
     width: parent ? parent.width : 0
 
-    Rectangle {
+    BorderSurface {
       id: arBase
       width: parent.width
       height: ar.rowH
-      radius: Style.space(12)
-      color: ar.hot ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.08)
-                    : (ar.app.disabled ? Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.03)
-                                       : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.05))
-      border.width: 1
-      border.color: ar.app.disabled ? Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.18)
-                   : (ar.actionsOpen ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
-                                     : Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.12))
+      radius: Style.cornerRadius
+      color: ar.hot ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, ar.hovered ? 0.14 : 0.08)
+           : (ar.app.disabled ? Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, ar.hovered ? 0.08 : 0.03)
+                              : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, ar.hovered ? 0.11 : 0.05))
+      borderSpec: ar.app.disabled
+          ? Border.flat(Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.22), 1)
+          : (ar.actionsOpen
+              ? Border.flat(Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35), 1)
+              : (ar.hovered
+                  ? Border.flat(Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.3), 1)
+                  : Border.flat(Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.12), 1)))
+      Behavior on color { ColorAnimation { duration: 60 } }
 
       Rectangle {
         id: arRunDot
@@ -2995,7 +3091,9 @@ instances: Number(modelData.instances) || 1
         width: Style.space(240)
         elide: Text.ElideRight
         text: (ar.hot ? "\uf071  " : "") + ar.appName
-        color: ar.hot ? root.urgent : root.fg
+        // Name stays in the normal foreground; the run dot + CPU pill carry the
+        // load signal so a verified app never reads red.
+        color: root.fg
         font.family: root.contentFontFamily
         font.pixelSize: Style.font.caption
         font.bold: true
@@ -3027,14 +3125,15 @@ instances: Number(modelData.instances) || 1
           width: arVerTxt.implicitWidth + Style.space(12)
           height: Style.space(16)
           radius: Style.space(8)
-          color: Qt.rgba(0.3, 0.75, 0.45, 0.18)
-          border.width: 1
-          border.color: Qt.rgba(0.3, 0.75, 0.45, 0.5)
+          // Solid, high-contrast green so the trusted state stays legible even
+          // when the row itself is tinted red for high CPU.
+          color: root.ok
+          border.width: 0
           Text {
             id: arVerTxt
             anchors.centerIn: parent
             text: "\uf058  Verified"
-            color: "#3fbf6f"
+            color: root.onColor(root.ok)
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
           }
@@ -3044,14 +3143,14 @@ instances: Number(modelData.instances) || 1
           width: arUnsTxt.implicitWidth + Style.space(12)
           height: Style.space(16)
           radius: Style.space(8)
-          color: Qt.rgba(0.9, 0.6, 0.15, 0.18)
+          color: root.warnSoft
           border.width: 1
-          border.color: Qt.rgba(0.9, 0.6, 0.15, 0.5)
+          border.color: Qt.rgba(root.warn.r, root.warn.g, root.warn.b, 0.5)
           Text {
             id: arUnsTxt
             anchors.centerIn: parent
             text: "\uf071  Unsigned"
-            color: "#e0a030"
+            color: root.warn
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
           }
@@ -3079,9 +3178,9 @@ instances: Number(modelData.instances) || 1
       Text {
         id: arPid
         anchors.right: parent.right
-        anchors.rightMargin: Style.space(476)
+        anchors.rightMargin: root.colRight("pid")
         anchors.verticalCenter: parent.verticalCenter
-        width: Style.space(60)
+        width: root.colWidth("pid")
         horizontalAlignment: Text.AlignHCenter
         text: (function() {
           var p = ar.app.pids || []
@@ -3097,18 +3196,18 @@ instances: Number(modelData.instances) || 1
       Sparkline {
         id: arSpark
         anchors.right: parent.right
-        anchors.rightMargin: Style.space(380)
+        anchors.rightMargin: root.colRight("trend")
         anchors.verticalCenter: parent.verticalCenter
-        width: Style.space(96)
+        width: root.colWidth("trend")
         height: Style.space(14)
         data: ar.app.spark || []
       }
       Text {
         id: arNet
         anchors.right: parent.right
-        anchors.rightMargin: Style.space(312)
+        anchors.rightMargin: root.colRight("net")
         anchors.verticalCenter: parent.verticalCenter
-        width: Style.space(56)
+        width: root.colWidth("net")
         horizontalAlignment: Text.AlignHCenter
         text: root.fmtNet((root.sample.net_rx_kbs || 0) + (root.sample.net_tx_kbs || 0))
         color: root.dim1
@@ -3118,9 +3217,9 @@ instances: Number(modelData.instances) || 1
       Text {
         id: arDisk
         anchors.right: parent.right
-        anchors.rightMargin: Style.space(240)
+        anchors.rightMargin: root.colRight("disk")
         anchors.verticalCenter: parent.verticalCenter
-        width: Style.space(56)
+        width: root.colWidth("disk")
         horizontalAlignment: Text.AlignHCenter
         text: root.fmtNet(ar.app.io || 0)
         color: root.dim1
@@ -3130,9 +3229,9 @@ instances: Number(modelData.instances) || 1
       Text {
         id: arGpu
         anchors.right: parent.right
-        anchors.rightMargin: Style.space(176)
+        anchors.rightMargin: root.colRight("gpu")
         anchors.verticalCenter: parent.verticalCenter
-        width: Style.space(48)
+        width: root.colWidth("gpu")
         horizontalAlignment: Text.AlignHCenter
         text: Math.round(ar.app.gpu || 0) + "%"
         color: root.dim1
@@ -3142,9 +3241,9 @@ instances: Number(modelData.instances) || 1
       Text {
         id: arMem
         anchors.right: parent.right
-        anchors.rightMargin: Style.space(112)
+        anchors.rightMargin: root.colRight("mem")
         anchors.verticalCenter: parent.verticalCenter
-        width: Style.space(48)
+        width: root.colWidth("mem")
         horizontalAlignment: Text.AlignHCenter
         text: Math.round(ar.app.mem || 0) + "%"
         color: root.dim1
@@ -3154,9 +3253,9 @@ instances: Number(modelData.instances) || 1
       Rectangle {
         id: arCpu
         anchors.right: parent.right
-        anchors.rightMargin: Style.space(40)
+        anchors.rightMargin: root.colRight("cpu")
         anchors.verticalCenter: parent.verticalCenter
-        width: Style.space(60)
+        width: root.colWidth("cpu")
         height: Style.space(16)
         radius: Style.space(8)
         color: ar.hot ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.14)
@@ -3190,6 +3289,8 @@ instances: Number(modelData.instances) || 1
           anchors.fill: parent
           hoverEnabled: true
           cursorShape: Qt.PointingHandCursor
+          onEntered: ar.hovered = true
+          onExited: ar.hovered = false
           onClicked: ar.actionsOpen = !ar.actionsOpen
         }
       }
@@ -3197,6 +3298,8 @@ instances: Number(modelData.instances) || 1
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
+        onEntered: ar.hovered = true
+        onExited: ar.hovered = false
         onClicked: ar.actionsOpen = !ar.actionsOpen
       }
     }
@@ -3223,18 +3326,27 @@ instances: Number(modelData.instances) || 1
   component AlertRow: Item {
     id: alr
     property var alert: ({})
+    property bool hovered: false
     signal dismissed()
     implicitHeight: Style.space(30)
     width: parent ? parent.width : 0
     readonly property color dot: alr.alert.severity === "critical" ? root.urgent
                 : (alr.alert.severity === "warning" ? root.accent : root.dim1)
 
-    Rectangle {
+    BorderSurface {
       anchors.fill: parent
-      radius: Style.space(12)
+      radius: Style.cornerRadius
       color: alr.dot === root.urgent
-          ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.07)
-          : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.05)
+          ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, alr.hovered ? 0.13 : 0.07)
+          : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, alr.hovered ? 0.11 : 0.05)
+      borderSpec: Border.flat(Qt.rgba(alr.dot.r, alr.dot.g, alr.dot.b, alr.hovered ? 0.3 : 0), 1)
+      Behavior on color { ColorAnimation { duration: 60 } }
+    }
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      onEntered: alr.hovered = true
+      onExited: alr.hovered = false
     }
     Rectangle {
       anchors.left: parent.left
@@ -3328,13 +3440,24 @@ instances: Number(modelData.instances) || 1
     readonly property color typed: root.eventTypeColor(event.kind || "")
     readonly property string icon: root.eventIcon(event.kind || "")
     property bool actionOpen: false
+    property bool hovered: false
     implicitHeight: (evr.actionOpen ? Style.space(54) : Style.space(30))
     width: parent ? parent.width : 0
 
-    Rectangle {
+    BorderSurface {
       anchors.fill: parent
-      radius: Style.space(12)
-      color: evr.unread ? root.accentSoft : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.05)
+      radius: Style.cornerRadius
+      color: evr.unread
+          ? (evr.hovered ? root.mixColor(root.accentSoft, root.accent, 0.12) : root.accentSoft)
+          : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, evr.hovered ? 0.11 : 0.05)
+      borderSpec: Border.flat(Qt.rgba(evr.typed.r, evr.typed.g, evr.typed.b, evr.hovered ? 0.32 : 0), 1)
+      Behavior on color { ColorAnimation { duration: 60 } }
+    }
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      onEntered: evr.hovered = true
+      onExited: evr.hovered = false
     }
     Rectangle {
       anchors.left: parent.left
@@ -3520,7 +3643,7 @@ instances: Number(modelData.instances) || 1
 
     Rectangle {
       anchors.fill: parent
-      color: Qt.rgba(0, 0, 0, 0.35)
+      color: Color.menu.scrim
       MouseArea {
         anchors.fill: parent
         cursorShape: Qt.PointingHandCursor
@@ -3647,7 +3770,7 @@ instances: Number(modelData.instances) || 1
             Text {
               visible: edp.verifiedLine !== ""
               text: edp.verifiedLine
-              color: edp.ctxAppVerified ? "#3cb371" : "#e0a030"
+              color: edp.ctxAppVerified ? root.ok : root.warn
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
@@ -3888,18 +4011,17 @@ instances: Number(modelData.instances) || 1
       Rectangle {
         visible: dp.app && !dp.app.verified
         width: Style.space(62); height: Style.space(16); radius: Style.space(8)
-        color: Qt.rgba(0.9, 0.6, 0.15, 0.15)
+        color: root.warnSoft
         border.width: 1
-        border.color: Qt.rgba(0.9, 0.6, 0.15, 0.45)
-        Text { anchors.centerIn: parent; text: "Unsigned"; color: "#e0a030"; font.family: root.contentFontFamily; font.pixelSize: Style.font.caption }
+        border.color: Qt.rgba(root.warn.r, root.warn.g, root.warn.b, 0.45)
+        Text { anchors.centerIn: parent; text: "Unsigned"; color: root.warn; font.family: root.contentFontFamily; font.pixelSize: Style.font.caption }
       }
       Rectangle {
         visible: dp.app && dp.app.verified
         width: Style.space(70); height: Style.space(16); radius: Style.space(8)
-        color: Qt.rgba(0.2, 0.7, 0.3, 0.15)
-        border.width: 1
-        border.color: Qt.rgba(0.2, 0.7, 0.3, 0.45)
-        Text { anchors.centerIn: parent; text: "Verified"; color: "#3cb371"; font.family: root.contentFontFamily; font.pixelSize: Style.font.caption }
+        color: root.ok
+        border.width: 0
+        Text { anchors.centerIn: parent; text: "Verified"; color: root.onColor(root.ok); font.family: root.contentFontFamily; font.pixelSize: Style.font.caption; font.bold: true }
       }
       Rectangle {
         visible: !!(dp.app && dp.app.perms && dp.app.perms.length > 0)
@@ -4364,91 +4486,22 @@ instances: Number(modelData.instances) || 1
       font.pixelSize: Style.font.caption
       font.bold: true
     }
-    // Right columns mirror ProcRow/AppRow's fixed right-side geometry so the
-    // labels sit directly over the data they describe.
-    Text {
-      anchors.right: parent.right
-      anchors.rightMargin: Style.space(40)
-      anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(60)
-      horizontalAlignment: Text.AlignHCenter
-      text: "CPU"
-      color: root.dim2
-      font.family: root.contentFontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: true
-    }
-    Text {
-      anchors.right: parent.right
-      anchors.rightMargin: Style.space(112)
-      anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(48)
-      horizontalAlignment: Text.AlignHCenter
-      text: "MEM"
-      color: root.dim2
-      font.family: root.contentFontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: true
-    }
-    Text {
-      anchors.right: parent.right
-      anchors.rightMargin: Style.space(176)
-      anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(48)
-      horizontalAlignment: Text.AlignHCenter
-      text: "GPU"
-      color: root.dim2
-      font.family: root.contentFontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: true
-    }
-    Text {
-      anchors.right: parent.right
-      anchors.rightMargin: Style.space(240)
-      anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(56)
-      horizontalAlignment: Text.AlignHCenter
-      text: "DISK"
-      color: root.dim2
-      font.family: root.contentFontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: true
-    }
-    Text {
-      anchors.right: parent.right
-      anchors.rightMargin: Style.space(312)
-      anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(56)
-      horizontalAlignment: Text.AlignHCenter
-      text: "NET"
-      color: root.dim2
-      font.family: root.contentFontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: true
-    }
-    Text {
-      anchors.right: parent.right
-      anchors.rightMargin: Style.space(380)
-      anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(96)
-      horizontalAlignment: Text.AlignHCenter
-      text: "TREND"
-      color: root.dim2
-      font.family: root.contentFontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: true
-    }
-    Text {
-      anchors.right: parent.right
-      anchors.rightMargin: Style.space(476)
-      anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(60)
-      horizontalAlignment: Text.AlignHCenter
-      text: "PID"
-      color: root.dim2
-      font.family: root.contentFontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: true
+    // Right columns are generated from the shared `root.procColumns` model, so
+    // each label sits exactly over the matching data cell in ProcRow/AppRow.
+    Repeater {
+      model: root.procColumns
+      delegate: Text {
+        anchors.right: parent.right
+        anchors.rightMargin: modelData.right
+        anchors.verticalCenter: parent.verticalCenter
+        width: modelData.width
+        horizontalAlignment: Text.AlignHCenter
+        text: modelData.label
+        color: root.dim2
+        font.family: root.contentFontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+      }
     }
   }
 
@@ -4467,6 +4520,7 @@ property real gpu: 0
     property bool disabled: false
     property var sparks: []
     property bool critical: cpu > 80
+    property bool hovered: false
     signal details()
     signal kill(string name)
     signal disable(string name)
@@ -4474,19 +4528,26 @@ property real gpu: 0
     implicitHeight: Style.space(26)
     width: parent ? parent.width : 0
 
-    Rectangle {
+    BorderSurface {
       anchors.fill: parent
-      radius: Style.space(12)
+      radius: Style.cornerRadius
       color: pr.critical
-          ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.10)
-          : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.05)
-      border.width: pr.disabled ? 1 : 0
-      border.color: Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.15)
+          ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, pr.hovered ? 0.16 : 0.10)
+          : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, pr.hovered ? 0.12 : 0.05)
+      borderSpec: pr.critical
+          ? Border.flat(Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.35), 1)
+          : (pr.hovered
+              ? Border.flat(Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.28), 1)
+              : Border.flat(Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b,
+                                   pr.disabled ? 0.18 : 0), pr.disabled ? 1 : 0))
+      Behavior on color { ColorAnimation { duration: 60 } }
     }
     MouseArea {
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
+      onEntered: pr.hovered = true
+      onExited: pr.hovered = false
       onClicked: pr.details()
     }
     Text {
@@ -4497,7 +4558,9 @@ property real gpu: 0
       width: Style.space(160)
       elide: Text.ElideRight
       text: pr.critical ? "\uf071  " + pr.name : pr.name
-      color: pr.critical ? root.urgent : root.fg
+      // Load is signalled by the row tint and the CPU pill, not the name, so a
+      // verified process never reads as "red/untrusted" just for running hot.
+      color: root.fg
       font.family: root.contentFontFamily
       font.pixelSize: Style.font.caption
       font.bold: pr.critical
@@ -4524,19 +4587,21 @@ property real gpu: 0
       }
       Rectangle {
         visible: pr.verified
-        width: prVerTxt.implicitWidth + Style.space(10)
-        height: Style.space(14)
-        radius: Style.space(7)
-        color: Qt.rgba(0.3, 0.75, 0.45, 0.18)
-        border.width: 1
-        border.color: Qt.rgba(0.3, 0.75, 0.45, 0.5)
+        width: prVerTxt.implicitWidth + Style.space(12)
+        height: Style.space(16)
+        radius: Style.space(8)
+        // Solid, high-contrast green so the trusted state stays legible even
+        // when the row itself is tinted red for high CPU.
+        color: root.ok
+        border.width: 0
         Text {
           id: prVerTxt
           anchors.centerIn: parent
           text: "\uf058 Verified"
-          color: "#3fbf6f"
+          color: root.onColor(root.ok)
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
+          font.bold: true
         }
       }
       Rectangle {
@@ -4544,14 +4609,14 @@ property real gpu: 0
         width: prUnsTxt.implicitWidth + Style.space(10)
         height: Style.space(14)
         radius: Style.space(7)
-        color: Qt.rgba(0.9, 0.6, 0.15, 0.15)
+        color: root.warnSoft
         border.width: 1
-        border.color: Qt.rgba(0.9, 0.6, 0.15, 0.45)
+        border.color: Qt.rgba(root.warn.r, root.warn.g, root.warn.b, 0.45)
         Text {
           id: prUnsTxt
           anchors.centerIn: parent
           text: "Unsigned"
-          color: "#e0a030"
+          color: root.warn
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
         }
@@ -4591,17 +4656,17 @@ property real gpu: 0
     }
     Sparkline {
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(380)
+      anchors.rightMargin: root.colRight("trend")
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(96)
+      width: root.colWidth("trend")
       height: Style.space(14)
       data: pr.sparks
     }
     Text {
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(476)
+      anchors.rightMargin: root.colRight("pid")
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(60)
+      width: root.colWidth("pid")
       horizontalAlignment: Text.AlignHCenter
       text: pr.pid > 0 ? String(pr.pid) : ""
       color: root.dim1
@@ -4610,9 +4675,9 @@ property real gpu: 0
     }
     Text {
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(312)
+      anchors.rightMargin: root.colRight("net")
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(56)
+      width: root.colWidth("net")
       horizontalAlignment: Text.AlignHCenter
       text: root.fmtNet(pr.net >= 0 ? pr.net
           : (root.sample.net_rx_kbs || 0) + (root.sample.net_tx_kbs || 0))
@@ -4622,9 +4687,9 @@ property real gpu: 0
     }
     Text {
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(240)
+      anchors.rightMargin: root.colRight("disk")
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(56)
+      width: root.colWidth("disk")
       horizontalAlignment: Text.AlignHCenter
       text: root.fmtNet(pr.io)
       color: root.dim1
@@ -4633,9 +4698,9 @@ property real gpu: 0
     }
     Text {
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(176)
+      anchors.rightMargin: root.colRight("gpu")
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(48)
+      width: root.colWidth("gpu")
       horizontalAlignment: Text.AlignHCenter
       text: Math.round(pr.gpu) + "%"
       color: root.dim1
@@ -4644,9 +4709,9 @@ property real gpu: 0
     }
     Text {
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(112)
+      anchors.rightMargin: root.colRight("mem")
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(48)
+      width: root.colWidth("mem")
       horizontalAlignment: Text.AlignHCenter
       text: Math.round(pr.mem) + "%"
       color: root.dim1
@@ -4656,9 +4721,9 @@ property real gpu: 0
     Rectangle {
       id: prCpu
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(40)
+      anchors.rightMargin: root.colRight("cpu")
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(60)
+      width: root.colWidth("cpu")
       height: Style.space(16)
       radius: Style.space(8)
       color: pr.critical ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.14)
@@ -5033,17 +5098,17 @@ property real gpu: 0
       }
     }
 
-    // Hover tooltip (hard-coded dark card, native-app feel regardless of theme).
-    Rectangle {
+    // Hover tooltip. Themed via Color.tooltip.* + a BorderSurface border spec
+    // so it matches the running theme (it used to be a hardcoded dark card).
+    BorderSurface {
       id: tip
       z: 50
       visible: false
       width: Style.space(220)
       implicitHeight: tipCol.implicitHeight + Style.space(16)
-      radius: Style.space(12)
-      color: "#1e1b2e"
-      border.width: 1
-      border.color: Qt.rgba(1, 1, 1, 0.14)
+      radius: Style.cornerRadius
+      color: Color.tooltip.background
+      borderSpec: root.tipBorderSpec
       Column {
         id: tipCol
         anchors.fill: parent
@@ -5053,14 +5118,14 @@ property real gpu: 0
           spacing: Style.space(8)
           Text {
             id: tipTime
-            color: "#ffffff"
+            color: Color.tooltip.text
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
             font.bold: true
           }
           Text {
             id: tipValue
-            color: Qt.rgba(1, 1, 1, 0.8)
+            color: Qt.rgba(Color.tooltip.text.r, Color.tooltip.text.g, Color.tooltip.text.b, 0.8)
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
           }
@@ -5068,7 +5133,7 @@ property real gpu: 0
         Text {
           id: tipTop
           width: tip.width - Style.space(16)
-          color: Qt.rgba(1, 1, 1, 0.7)
+          color: Qt.rgba(Color.tooltip.text.r, Color.tooltip.text.g, Color.tooltip.text.b, 0.7)
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
@@ -5076,7 +5141,7 @@ property real gpu: 0
         Text {
           id: tipEvents
           width: tip.width - Style.space(16)
-          color: Qt.rgba(0.72, 0.92, 1, 0.92)
+          color: root.info
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
