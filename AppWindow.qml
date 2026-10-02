@@ -5155,9 +5155,13 @@ PanelWindow {
         if (hot) ctx.stroke()
       }
 
-      // Event pins: a diamond tab at the top edge with a faint vertical guide
-      // down to the curve — every logged event (incl. every toast) stays
-      // pinned on the chart at its timestamp.
+      // Event markers. Previously a hard 8px diamond straddling the top axis
+      // plus a 1px guide line at 0.22 alpha — both read as a stray artifact
+      // rather than a designed element. Now each event gets:
+      //   * a vertical guide that fades out toward the curve (gradient stroke,
+      //     strongest at the top where the label sits, gone by the data), and
+      //   * a small ringed dot below the axis that reads as a precise, quiet
+      //     marker instead of a blunt shape sitting on the line.
       if (hg.events && hg.events.length) {
         var eST = hg.domainStart(), eET = hg.domainEnd()
         for (var pi = 0; pi < hg.events.length; pi++) {
@@ -5176,49 +5180,96 @@ PanelWindow {
             }
           }
           var pinCol = root.eventTypeColor(ev2.kind || ev2.type || "")
-          // Faint vertical guide from the pin down to the interpolated curve
-          // value (or the plot floor if the event predates the data).
+          // Where the guide meets the curve (or the plot floor if the event
+          // predates the data).
           var pinBase = pinVal >= 0
               ? topPad + plotH - Math.max(0, Math.min(yMax, pinVal)) / yMax * plotH
               : topPad + plotH - 1
-          ctx.strokeStyle = root.hexRgba(pinCol, 0.22)
+          var pinTop = topPad + 16
+          var pinEnd = Math.max(pinTop, pinBase - 4)
+          // Gradient guide: opaque-ish at the marker, fading to nothing where
+          // it reaches the data, so it guides the eye instead of cutting it.
+          var guide = ctx.createLinearGradient(0, pinTop, 0, pinEnd)
+          guide.addColorStop(0, root.hexRgba(pinCol, 0.5))
+          guide.addColorStop(1, root.hexRgba(pinCol, 0.0))
+          ctx.strokeStyle = guide
+          ctx.lineWidth = 1.5
+          ctx.beginPath()
+          ctx.moveTo(pinX, pinTop)
+          ctx.lineTo(pinX, pinEnd)
+          ctx.stroke()
+          // Ringed dot marker sitting just below the top axis.
+          var mY = topPad + 9
+          var mR = 3
+          ctx.fillStyle = root.hexRgba(pinCol, 0.95)
+          ctx.beginPath()
+          ctx.arc(pinX, mY, mR, 0, Math.PI * 2)
+          ctx.fill()
+          // Soft outer halo for depth, then a crisp surface-coloured centre so
+          // the dot reads as a ring rather than a flat blob.
+          ctx.strokeStyle = root.hexRgba(pinCol, 0.28)
           ctx.lineWidth = 1
           ctx.beginPath()
-          ctx.moveTo(pinX + 0.5, topPad + 11)
-          ctx.lineTo(pinX + 0.5, Math.max(topPad + 11, pinBase - 4))
+          ctx.arc(pinX, mY, mR + 2.5, 0, Math.PI * 2)
           ctx.stroke()
-          // Diamond pin head pinned to the top edge.
+          ctx.fillStyle = root.surface
           ctx.beginPath()
-          ctx.moveTo(pinX, topPad + 2)
-          ctx.lineTo(pinX + 4, topPad + 6)
-          ctx.lineTo(pinX, topPad + 10)
-          ctx.lineTo(pinX - 4, topPad + 6)
-          ctx.closePath()
-          ctx.fillStyle = pinCol
+          ctx.arc(pinX, mY, mR - 1.4, 0, Math.PI * 2)
           ctx.fill()
         }
       }
 
+      // Drag-to-select band. Soft vertical gradient with brighter edges rather than
+      // a flat fill inside a hard square outline, so the selection reads as a
+      // deliberate region instead of a debugging rectangle.
       if (dragStart >= 0 && !hg.zoomed) {
         var bX = Math.min(dragStart, dragCur)
         var bW = Math.abs(dragCur - dragStart)
-        ctx.fillStyle = Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.12)
-        ctx.fillRect(bX, topPad, bW, plotH)
-        ctx.strokeStyle = Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.6)
-        ctx.strokeRect(bX + 0.5, topPad + 0.5, bW - 1, plotH - 1)
+        if (bW > 0) {
+          var band = ctx.createLinearGradient(bX, 0, bX + bW, 0)
+          band.addColorStop(0, Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.16))
+          band.addColorStop(0.5, Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.07))
+          band.addColorStop(1, Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.16))
+          ctx.fillStyle = band
+          ctx.fillRect(bX, topPad, bW, plotH)
+          ctx.strokeStyle = Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.45)
+          ctx.lineWidth = 1
+          ctx.beginPath()
+          ctx.moveTo(bX + 0.5, topPad)
+          ctx.lineTo(bX + 0.5, topPad + plotH)
+          ctx.moveTo(bX + bW - 0.5, topPad)
+          ctx.lineTo(bX + bW - 0.5, topPad + plotH)
+          ctx.stroke()
+        }
       }
 
+      // Zoom state pill. Rounded ends and a hairline border instead of a hard
+      // fillRect/strokeRect corner pair, matching the refined marker above.
       if (hg.zoomed) {
         var pillText = root.fmtTime(hg.viewStart) + " – " + root.fmtTime(hg.viewEnd) + "   ↺ reset"
         ctx.font = "9px " + root.contentFontFamily
         var tw = ctx.measureText(pillText).width
-        ctx.fillStyle = Qt.rgba(root.surface.r, root.surface.g, root.surface.b, 0.92)
-        ctx.fillRect(leftPad, 4, tw + 14, 16)
-        ctx.strokeStyle = Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.4)
-        ctx.strokeRect(leftPad + 0.5, 4.5, tw + 13, 15)
+        var pX = leftPad, pY = 4, pH = 17, pW = tw + 16
+        ctx.beginPath()
+        if (ctx.roundRect) {
+          ctx.roundRect(pX, pY, pW, pH, pH / 2)
+        } else {
+          ctx.moveTo(pX + pH / 2, pY)
+          ctx.arcTo(pX + pW, pY, pX + pW, pY + pH, pH / 2)
+          ctx.arcTo(pX + pW, pY + pH, pX, pY + pH, pH / 2)
+          ctx.arcTo(pX, pY + pH, pX, pY, pH / 2)
+          ctx.arcTo(pX, pY, pX + pW, pY, pH / 2)
+          ctx.closePath()
+        }
+        ctx.fillStyle = Qt.rgba(root.surface.r, root.surface.g, root.surface.b, 0.94)
+        ctx.fill()
+        ctx.strokeStyle = Qt.rgba(hg.lineColor.r, hg.lineColor.g, hg.lineColor.b, 0.45)
+        ctx.lineWidth = 1
+        ctx.stroke()
         ctx.fillStyle = hg.lineColor
         ctx.textAlign = "left"
-        ctx.fillText(pillText, leftPad + 7, 16.4)
+        // Centre the label in the pill rather than using fixed offsets.
+        ctx.fillText(pillText, pX + 8, pY + pH / 2 + 3)
       }
     }
 
