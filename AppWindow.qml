@@ -4359,6 +4359,46 @@ PanelWindow {
       if (!arr.length) return []
       return arr.slice(0, dp.procShowAll ? arr.length : 6)
     }
+    // Per-app CPU trend, aggregated across every instance of the app by name so
+    // a 2-instance python3 reads as one series rather than two ragged ones —
+    // the same aggregation the PEAK CPU tile already uses. Built from
+    // sample.snaps, which the collector writes once a minute (proc_history is
+    // keyed on PROC_TS = PROC_MIN*60) and sample-json.sh ships as the newest 90
+    // rows, so the window is ~90 minutes at 1-minute resolution.
+    //
+    // Snapshots where the app was absent are NOT back-filled with 0: the app
+    // genuinely wasn't running, and a zero there would read as "idle" when it
+    // means "not present". Missing minutes are skipped instead, leaving a gap
+    // in the line.
+    function trendSeries() {
+      var name = dp.app ? dp.app.name : ""
+      if (!name) return []
+      var snaps = root.sample.snaps || []
+      var out = []
+      for (var i = 0; i < snaps.length; i++) {
+        var procs = snaps[i].procs || []
+        var sum = 0, found = false
+        for (var j = 0; j < procs.length; j++) {
+          if (procs[j].name === name) { sum += procs[j].cpu || 0; found = true }
+        }
+        if (found) out.push({ ts: snaps[i].ts, v: sum })
+      }
+      return out
+    }
+    // Span + peak of the series, for the caption under the chart.
+    function trendSummary() {
+      var pts = dp.trendSeries()
+      if (!pts.length) return ""
+      var peak = 0, sum = 0
+      for (var i = 0; i < pts.length; i++) {
+        if (pts[i].v > peak) peak = pts[i].v
+        sum += pts[i].v
+      }
+      var mins = Math.round((pts[pts.length - 1].ts - pts[0].ts) / 60)
+      return Math.round(peak * 10) / 10 + "% peak · "
+           + (Math.round((sum / pts.length) * 10) / 10) + "% avg · last "
+           + mins + " min"
+    }
     function procMore() { return Math.max(0, (root.procDetail || []).length - 6) }
     function statLegend() {
       if (!dp.stats) return []
@@ -4560,6 +4600,184 @@ PanelWindow {
               font.pixelSize: Style.font.heading
               font.bold: true
               elide: Text.ElideRight
+            }
+          }
+        }
+      }
+
+      // Per-app CPU trend. Sits directly under the stat tiles so the headline
+      // numbers read as a summary of the curve below them. Only CPU is charted:
+      // across the tracked window cpu is non-zero for every app, while mem/gpu/
+      // io have data for only a minority, so charting them would mostly draw a
+      // flat zero line and imply "idle" rather than "not collected".
+      Item {
+        width: parent.width
+        height: Style.space(74)
+        visible: dp.trendSeries().length >= 2
+
+        Text {
+          id: dpTrendLabel
+          anchors.top: parent.top
+          anchors.left: parent.left
+          text: "CPU TREND"
+          color: root.dim2
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+          font.letterSpacing: 1
+          font.bold: true
+        }
+        Text {
+          anchors.top: dpTrendLabel.top
+          anchors.right: parent.right
+          text: dp.trendSummary()
+          color: root.dim1
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
+
+        Canvas {
+          id: dpTrend
+          anchors.top: dpTrendLabel.bottom
+          anchors.topMargin: Style.space(6)
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
+          // Re-read the series on a timer rather than binding it: trendSeries()
+          // is a function over sample.snaps, and function calls are not tracked
+          // as dependencies, so a binding would freeze. sampleProc refreshes
+          // every 4s and snaps are minute-aligned, so 1s is ample and cheap
+          // (the canvas only repaints when the point count actually changes).
+          property int lastCount: -1
+          property int lastSpan: -1
+          Timer {
+            interval: 1000
+            repeat: true
+            running: dp.app !== null
+            onTriggered: {
+              var s = dp.trendSeries()
+              if (s.length !== dpTrend.lastCount || s.length && s[s.length - 1].ts !== dpTrend.lastSpan) {
+                dpTrend.lastCount = s.length
+                dpTrend.lastSpan = s.length ? s[s.length - 1].ts : -1
+                dpTrend.requestPaint()
+              }
+            }
+          }
+          onWidthChanged: requestPaint()
+          onPaint: {
+            var ctx = getContext("2d")
+            ctx.reset()
+            var pts = dp.trendSeries()
+            if (pts.length < 2) return
+            var w = width, h = height
+            var topPad = 3, bottomPad = 3
+            var plotH = Math.max(4, h - topPad - bottomPad)
+            // X spans the series' own time range rather than the index, so a
+            // minute where the app was absent leaves a proportional gap instead
+            // of silently compressing the remaining points together.
+            var t0 = pts[0].ts, t1 = pts[pts.length - 1].ts
+            var spanT = Math.max(1, t1 - t0)
+            // Y is scaled to the data, not to 100: these are per-app averages
+            // across cores, so a busy app rarely approaches 100 and a fixed
+            // ceiling would flatten every trend into a straight line.
+            var mx = 0
+            for (var i = 0; i < pts.length; i++) if (pts[i].v > mx) mx = pts[i].v
+            var yMax = Math.max(1, mx * 1.15)
+
+            // Baseline, drawn faintly so the plot reads as sitting on a floor.
+            ctx.strokeStyle = Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.12)
+            ctx.lineWidth = 1
+            ctx.beginPath()
+            ctx.moveTo(0, topPad + plotH + 0.5)
+            ctx.lineTo(w, topPad + plotH + 0.5)
+            ctx.stroke()
+
+            var xOf = function(p) { return (p.ts - t0) / spanT * w }
+            var yOf = function(p) {
+              return topPad + plotH - Math.max(0, Math.min(yMax, p.v)) / yMax * plotH
+            }
+
+            // Filled area under the curve, split at gaps so an absent minute is
+            // a real break in the fill instead of a straight chord across it.
+            // Split the series into runs of consecutive samples. A gap wider than 1.9x the
+            // median spacing means the app was missing from that snapshot, which
+            // must break BOTH the fill and the stroke — otherwise a chord is
+            // drawn straight across a minute the app wasn't running, implying
+            // data that was never collected.
+            var runs = []
+            var cur = []
+            for (var i = 0; i < pts.length; i++) {
+              if (cur.length === 0) { cur.push(pts[i]); continue }
+              var gap = pts[i].ts - pts[cur.length - 1].ts
+              if (gap > 90) { runs.push(cur); cur = [pts[i]] }   // >90s == a skipped minute
+              else cur.push(pts[i])
+            }
+            if (cur.length) runs.push(cur)
+
+            var xOf = function(p) { return (p.ts - t0) / spanT * w }
+            var yOf = function(p) {
+              return topPad + plotH - Math.max(0, Math.min(yMax, p.v)) / yMax * plotH
+            }
+
+            var grad = ctx.createLinearGradient(0, topPad, 0, topPad + plotH)
+            grad.addColorStop(0, Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.26))
+            grad.addColorStop(1, Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.0))
+
+            // Filled area under the curve, one closed path per run so the fill
+            // never bleeds across a gap.
+            for (var r = 0; r < runs.length; r++) {
+              var run = runs[r]
+              if (run.length < 2) continue
+              ctx.beginPath()
+              ctx.moveTo(xOf(run[0]), yOf(run[0]))
+              for (var a = 1; a < run.length; a++) ctx.lineTo(xOf(run[a]), yOf(run[a]))
+              ctx.lineTo(xOf(run[run.length - 1]), topPad + plotH)
+              ctx.lineTo(xOf(run[0]), topPad + plotH)
+              ctx.closePath()
+              ctx.fillStyle = grad
+              ctx.fill()
+            }
+
+            // Crisp 2px line on top, one stroke per run.
+            ctx.strokeStyle = root.accent
+            ctx.lineWidth = 2
+            ctx.lineJoin = "round"
+            ctx.lineCap = "round"
+            for (var s2 = 0; s2 < runs.length; s2++) {
+              var rn = runs[s2]
+              if (rn.length < 2) continue
+              ctx.beginPath()
+              ctx.moveTo(xOf(rn[0]), yOf(rn[0]))
+              for (var b = 1; b < rn.length; b++) ctx.lineTo(xOf(rn[b]), yOf(rn[b]))
+              ctx.stroke()
+            }
+
+            // A lone sample (app seen once, e.g. just started) has no line to
+            // draw, so mark it as a dot rather than rendering nothing.
+            for (var t2 = 0; t2 < runs.length; t2++) {
+              if (runs[t2].length !== 1) continue
+              ctx.fillStyle = root.accent
+              ctx.beginPath()
+              ctx.arc(xOf(runs[t2][0]), yOf(runs[t2][0]), 2.5, 0, Math.PI * 2)
+              ctx.fill()
+            }
+
+            // Dot on the newest sample, so "where it is now" is unambiguous.
+            var last = pts[pts.length - 1]
+            ctx.fillStyle = root.accent
+            ctx.beginPath()
+            ctx.arc(xOf(last), yOf(last), 2.5, 0, Math.PI * 2)
+            ctx.fill()
+
+            // Ring on the peak, so a spike is findable without reading the caption.
+            if (mx > 0) {
+              var pi = 0
+              for (var q = 1; q < pts.length; q++) if (pts[q].v > pts[pi].v) pi = q
+              ctx.strokeStyle = Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.55)
+              ctx.lineWidth = 1
+              ctx.beginPath()
+              ctx.arc(xOf(pts[pi]), yOf(pts[pi]), 3, 0, Math.PI * 2)
+              ctx.stroke()
             }
           }
         }
