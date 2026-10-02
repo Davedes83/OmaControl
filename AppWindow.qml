@@ -123,7 +123,7 @@ PanelWindow {
   // chart is the flexible element that absorbs whatever vertical space is left
   // over. That keeps the list from collapsing to one row on short screens and
   // stops the chart from starving it on tall ones.
-  readonly property int procRowsVisible: 5
+  readonly property int procRowsVisible: 4
   readonly property real procRowH: Style.space(34)
   readonly property real procRowSpacing: Style.space(2)
   readonly property real procListH: procRowsVisible * (procRowH + procRowSpacing) - procRowSpacing
