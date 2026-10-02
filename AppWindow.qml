@@ -103,18 +103,12 @@ PanelWindow {
   }
 
   // Leading geometry of the app/process row text block. Declared once here so the
-  // rows, the ColHeader labels and the midX the Apps page passes in can never
-  // drift apart when the avatar or name width changes.
+  // rows and the ColHeader labels can never drift apart when the avatar changes.
+  // The *width* of the name block is deliberately not a constant: it absorbs
+  // whatever the metric columns leave over (see nameWidth below).
   readonly property real rowAvatarSize: Style.space(26)
-  readonly property real rowNameWidth: Style.space(240)
   // 8 (left pad) + 26 (avatar) + 6 (gap) + 8 (run dot) + 8 (gap)
   readonly property real rowLead: Style.space(8) + rowAvatarSize + Style.space(6) + Style.space(8) + Style.space(8)
-  readonly property real rowTrustX: rowLead + rowNameWidth + Style.space(8)
-
-  // The process list uses the same avatar lead but a narrower name column, so it
-  // gets its own pair of constants rather than magic numbers in three places.
-  readonly property real procNameWidth: Style.space(160)
-  readonly property real procTrustX: rowLead + procNameWidth + Style.space(8)
 
   // ---- Activity column vertical budget
   // The Activity page stacks a metric tab row, the history chart, the
@@ -271,15 +265,31 @@ PanelWindow {
   // once here keeps the header labels and the data cells in lockstep and makes
   // a column a one-line change. `right` is the inset from the row's right edge
   // (to the column's trailing edge), `width` the column's width.
-  readonly property var procColumns: [
-    { key: "cpu",   label: "CPU",   right: Style.space(40),  width: Style.space(60) },
-    { key: "mem",   label: "MEM",   right: Style.space(112), width: Style.space(48) },
-    { key: "gpu",   label: "GPU",   right: Style.space(176), width: Style.space(48) },
-    { key: "disk",  label: "DISK",  right: Style.space(240), width: Style.space(56) },
-    { key: "net",   label: "NET",   right: Style.space(312), width: Style.space(56) },
-    { key: "trend", label: "TREND", right: Style.space(380), width: Style.space(96) },
-    { key: "pid",   label: "PID",   right: Style.space(476), width: Style.space(60) }
-  ]
+  //
+  // The insets are now derived from one uniform gutter instead of typed in per
+  // column: the hand-tuned values left 60-72px voids between most of the numeric
+  // columns, which is most of what made the rows look loosely fitted.
+  readonly property var procColumns: {
+    var gutter = Style.space(16)
+    // Right-to-left, starting from the CPU column's trailing padding.
+    var defs = [
+      { key: "cpu",   label: "CPU",   w: 60 },
+      { key: "mem",   label: "MEM",   w: 48 },
+      { key: "gpu",   label: "GPU",   w: 48 },
+      { key: "disk",  label: "DISK",  w: 56 },
+      { key: "net",   label: "NET",   w: 56 },
+      { key: "trend", label: "TREND", w: 96 },
+      { key: "pid",   label: "PID",   w: 60 }
+    ]
+    var out = []
+    var inset = Style.space(40)
+    for (var i = 0; i < defs.length; i++) {
+      out.push({ key: defs[i].key, label: defs[i].label,
+                 right: inset, width: Style.space(defs[i].w) })
+      inset += Style.space(defs[i].w) + gutter
+    }
+    return out
+  }
   function colRight(key) {
     for (var i = 0; i < root.procColumns.length; i++)
       if (root.procColumns[i].key === key) return root.procColumns[i].right
@@ -289,6 +299,34 @@ PanelWindow {
     for (var i = 0; i < root.procColumns.length; i++)
       if (root.procColumns[i].key === key) return root.procColumns[i].width
     return 0
+  }
+
+  // ---- Horizontal fit of a row: name block | trust chips | metric columns
+  // The metric columns (PID..CPU) are pinned to the row's right edge as one
+  // evenly spaced block, so everything between `rowLead` and the PID column
+  // belongs to the name block and the trust chips. The name width used to be a
+  // fixed constant (240 for apps, 160 for processes), which on a wide card left
+  // a dead gap between the chips and the PID column. Deriving both from the
+  // leftover width instead is what makes the row fit its card at any size.
+  // Declared after procColumns so the insets are guaranteed to exist first.
+  readonly property real metricsInset: colRight("pid") + colWidth("pid")
+  readonly property real chipGap: Style.space(20)   // chips -> PID column
+  readonly property real nameGap: Style.space(20)   // name block -> chips
+  readonly property real minNameW: Style.space(150) // never squeeze the name away
+  // Inset from the row's RIGHT edge to the trailing edge of the trust-chip
+  // column. This is exactly the quantity anchors.rightMargin expects, so the
+  // chip rows and the TRUST header label both consume it directly and stay
+  // locked together. (Deriving it from a width argument and feeding it back as a
+  // rightMargin double-counts the inset and stacks the chips on the columns.)
+  readonly property real trustInset: metricsInset + chipGap
+
+  // Width left for the name/subtitle block in a row `w` wide once `chipW` of
+  // chips are placed: the span from the row lead to the chips' leading edge,
+  // minus the gap. Nothing else in the row is fixed-width, so this is what
+  // keeps the row flush with no dead gap in the middle.
+  function nameWidth(w, chipW) {
+    return Math.max(minNameW,
+                    (w - root.trustInset) - (chipW || 0) - root.nameGap - rowLead)
   }
   readonly property var filteredAlerts: root.computeAlerts()
   readonly property int activeAlertCount: root.filteredAlerts.length
@@ -1640,7 +1678,6 @@ PanelWindow {
               anchors.right: parent.right
               leftLabel: "PROCESS"
               midLabel: "TRUST"
-              midX: root.procTrustX
             }
 
             ListView {
@@ -1941,7 +1978,6 @@ PanelWindow {
             anchors.right: parent.right
             leftLabel: "APP"
             midLabel: "TRUST"
-            midX: root.rowTrustX
           }
 
           ListView {
@@ -3290,7 +3326,9 @@ PanelWindow {
         anchors.left: arRunDot.right
         anchors.leftMargin: Style.space(8)
         anchors.verticalCenter: parent.verticalCenter
-        width: root.rowNameWidth
+        // Fills the leftover width between the row lead and the trust chips, so
+        // long names get room and no dead gap opens up mid-row.
+        width: root.nameWidth(arBase.width, arTags.implicitWidth)
         spacing: 1
 
         Text {
@@ -3318,13 +3356,19 @@ PanelWindow {
 
       Row {
         id: arTags
-        anchors.left: parent.left
-        anchors.leftMargin: root.rowTrustX
+        // Right-anchored against the metric block, so the chips sit flush
+        // against the PID column. The chips' leading edge then floats with
+        // whatever set is shown, and the name block above is measured against
+        // this row's real width rather than a fixed guess.
+        anchors.right: parent.right
+        anchors.rightMargin: root.trustInset
         anchors.verticalCenter: parent.verticalCenter
         spacing: Style.space(4)
         Rectangle {
           visible: ar.app.disabled
-          width: arDisTxt.implicitWidth + Style.space(12)
+          // Collapsed while hidden: a Row still reserves space for invisible
+          // children, which used to leave a phantom void beside the chip.
+          width: ar.app.disabled ? arDisTxt.implicitWidth + Style.space(12) : 0
           height: Style.space(16)
           radius: Style.space(8)
           color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.14)
@@ -3339,7 +3383,7 @@ PanelWindow {
         }
         Rectangle {
           visible: ar.app.verified
-          width: arVerTxt.implicitWidth + Style.space(12)
+          width: ar.app.verified ? arVerTxt.implicitWidth + Style.space(12) : 0
           height: Style.space(16)
           radius: Style.space(8)
           // Solid, high-contrast green so the trusted state stays legible even
@@ -3357,7 +3401,7 @@ PanelWindow {
         }
         Rectangle {
           visible: ar.unsigned
-          width: arUnsTxt.implicitWidth + Style.space(12)
+          width: ar.unsigned ? arUnsTxt.implicitWidth + Style.space(12) : 0
           height: Style.space(16)
           radius: Style.space(8)
           color: root.warnSoft
@@ -3822,6 +3866,13 @@ PanelWindow {
     id: edp
     property var event: ({})
 
+    // Card sizing: hug the content up to the space the page can spare, then
+    // scroll instead of clipping. The body is measured inside the Flickable, so
+    // the card grows to fit a tall event and stops at the viewport rather than
+    // shearing the last rows off.
+    readonly property real cardW: Math.min(parent.width * 0.5, Style.space(420))
+    readonly property real cardMaxH: Math.max(Style.space(160), parent.height - Style.space(80))
+
     // Guarded alias so the hidden panel (event === null) never hits null derefs.
     readonly property var ev: edp.event || {}
     signal close()
@@ -3876,28 +3927,42 @@ PanelWindow {
       }
     }
 
-    Rectangle {
-      width: Math.min(parent.width * 0.5, Style.space(420))
-      height: Math.min(parent.height - Style.space(80),
-                       edpBody.implicitHeight + Style.space(40))
+    BorderSurface {
+      id: edpCard
+      // Hugs edpFlick's content up to cardMaxH, then scrolls.
+      width: edp.cardW
+      height: Math.min(edp.cardMaxH, edpFlick.contentHeight + Style.space(44))
       anchors.centerIn: parent
       radius: Style.space(16)
       color: root.surface
-      border.width: 1
-      border.color: root.surfaceBorder
+      // Same themed border spec as the main card, so the modal reads as part of
+      // the same surface family rather than a plain outlined rectangle.
+      borderSpec: root.cardBorderSpec
       clip: true
       MouseArea { anchors.fill: parent }
 
-      Text {
+      // Close affordance with a hover state, matching the pill/chip treatment
+      // used everywhere else instead of a bare glyph.
+      Rectangle {
         anchors.top: parent.top
         anchors.topMargin: Style.space(10)
         anchors.right: parent.right
-        anchors.rightMargin: Style.space(14)
-        text: "\uf00d"
-        color: root.dim2
-        font.family: root.contentFontFamily
-        font.pixelSize: Style.font.body
+        anchors.rightMargin: Style.space(12)
+        width: Style.space(22)
+        height: Style.space(22)
+        radius: width / 2
+        color: edpCloseHover.containsMouse
+               ? Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.18) : "transparent"
+        Behavior on color { ColorAnimation { duration: 60 } }
+        Text {
+          anchors.centerIn: parent
+          text: "\uf00d"
+          color: edpCloseHover.containsMouse ? root.fg : root.dim2
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.body
+        }
         MouseArea {
+          id: edpCloseHover
           anchors.fill: parent
           hoverEnabled: true
           cursorShape: Qt.PointingHandCursor
@@ -3905,14 +3970,27 @@ PanelWindow {
         }
       }
 
+      Flickable {
+        id: edpFlick
+        anchors.fill: parent
+        anchors.leftMargin: Style.space(20)
+        anchors.rightMargin: Style.space(20)
+        anchors.topMargin: Style.space(20)
+        anchors.bottomMargin: Style.space(20)
+        contentWidth: width
+        contentHeight: edpBody.implicitHeight
+        boundsBehavior: Flickable.StopAtBounds
+        clip: true
+
       Column {
         id: edpBody
-        anchors.fill: parent
-        anchors.margins: Style.space(20)
+        width: edpFlick.width
         spacing: Style.space(10)
 
         Row {
-          spacing: Style.space(8)
+          id: edpHead
+          width: edpBody.width
+          spacing: Style.space(10)
           Rectangle {
             width: Style.space(36)
             height: Style.space(36)
@@ -3928,14 +4006,22 @@ PanelWindow {
           }
           Column {
             anchors.verticalCenter: parent.verticalCenter
+            // Bounded so a long app name elides instead of sliding under the
+            // close button (the trailing reserve clears it).
+            width: Math.max(Style.space(60), edpHead.width - Style.space(36)
+                            - Style.space(10) - Style.space(34))
             Text {
+              width: parent.width
+              elide: Text.ElideRight
               text: edp.ev.app || "System"
               color: root.fg
               font.family: root.contentFontFamily
-              font.pixelSize: Style.font.body
+              font.pixelSize: Style.font.heading
               font.bold: true
             }
             Text {
+              width: parent.width
+              elide: Text.ElideRight
               text: edp.ev.publisher || "Unknown"
               color: root.dim1
               font.family: root.contentFontFamily
@@ -4018,13 +4104,17 @@ PanelWindow {
             }
           }
         }
-        Row {
+        // Six fixed-width pills overflowed the card and clipped their own labels
+        // ("CPU TMP"/"GPU TMP"). Flow + label-driven width means they wrap and
+        // stay legible at any count.
+        Flow {
           visible: edp.ctxPills.length > 0
+          width: edpBody.width
           spacing: Style.space(6)
           Repeater {
             model: edp.ctxPills
             delegate: Rectangle {
-              width: Style.space(56)
+              width: Math.max(Style.space(52), edpPillKey.implicitWidth + Style.space(18))
               height: Style.space(34)
               radius: Style.space(8)
               color: root.accentSoft
@@ -4040,6 +4130,7 @@ PanelWindow {
                   font.bold: true
                 }
                 Text {
+                  id: edpPillKey
                   anchors.horizontalCenter: parent.horizontalCenter
                   text: modelData.k
                   color: root.dim2
@@ -4057,12 +4148,24 @@ PanelWindow {
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
         }
-        Text {
-          text: "PROCESSES AT " + root.fmtTime(edp.ev.ts || 0)
-          color: root.dim1
-          font.family: root.contentFontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
+        // A hairline rule turns the process list into a labelled block — the same
+        // quiet-heading treatment the table headers use elsewhere.
+        Column {
+          width: edpBody.width
+          spacing: Style.space(6)
+          Rectangle {
+            width: parent.width
+            height: 1
+            color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.25)
+          }
+          Text {
+            text: "PROCESSES AT " + root.fmtTime(edp.ev.ts || 0)
+            color: root.dim2
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            font.letterSpacing: 1
+          }
         }
         Text {
           visible: edp.snapProcs.length === 0
@@ -4079,26 +4182,20 @@ PanelWindow {
             readonly property bool isEvApp: (modelData.name || "").toLowerCase() === (edp.ev.app || "").toLowerCase()
             width: edpBody.width - Style.space(2)
             height: Style.space(19)
+            // One left-aligned label owns the row. This used to pair it with a
+            // second Text pinned right ("17% CPU · 3963200") whose raw MB value
+            // ran together into an unreadable block of digits; removing it lets
+            // the name use the full width and simply elide.
             Text {
               anchors.left: parent.left
+              anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              width: parent.width * 0.55
               text: (evProc.isEvApp ? "\u25c9 " : "") + (modelData.name || "unknown")
               color: evProc.isEvApp ? root.accent : root.fg
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
               font.bold: evProc.isEvApp
               elide: Text.ElideRight
-            }
-            Text {
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              text: Math.round(modelData.cpu || 0) + "% CPU"
-                  + (modelData.mem ? " · " + Math.round(modelData.mem) + " MB" : "")
-                  + (modelData.pid ? " · " + modelData.pid : "")
-              color: evProc.isEvApp ? root.accent : root.dim1
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.caption
             }
           }
         }
@@ -4126,6 +4223,7 @@ PanelWindow {
             onChosen: root.openEventSearch(edp.ev)
           }
         }
+      }
       }
     }
   }
@@ -4845,7 +4943,6 @@ PanelWindow {
     id: ch
     property string leftLabel: "PROCESS"
     property string midLabel: "TRUST"
-    property real midX: Style.space(306)
     height: Style.space(16)
     width: parent ? parent.width : 0
 
@@ -4866,11 +4963,14 @@ PanelWindow {
       font.pixelSize: Style.font.subtitle
       font.bold: true
     }
+    // TRUST is right-anchored onto the same inset the chip rows use, so the
+    // header tracks the chips instead of a hard-coded column that drifts.
     Text {
       visible: ch.midLabel !== ""
-      anchors.left: parent.left
-      anchors.leftMargin: ch.midX
+      anchors.right: parent.right
+      anchors.rightMargin: root.trustInset
       anchors.verticalCenter: parent.verticalCenter
+      horizontalAlignment: Text.AlignRight
       text: ch.midLabel
       color: root.dim2
       font.family: root.contentFontFamily
@@ -4972,13 +5072,13 @@ PanelWindow {
       }
 
       // Two-tone hierarchy, AppControl-style: bold name with a muted secondary
-      // line beneath it. The whole block keeps a fixed width so the trust chips
-      // that follow stay aligned down the column.
+      // line beneath it. The width is measured against the chips to its right so
+      // the two blocks meet at a fixed gap instead of leaving a dead void.
       Column {
         anchors.left: parent.left
         anchors.leftMargin: root.rowLead
         anchors.verticalCenter: parent.verticalCenter
-        width: root.procNameWidth
+        width: root.nameWidth(pr.width, prTags.implicitWidth)
         spacing: 1
 
         Text {
@@ -5004,13 +5104,15 @@ PanelWindow {
         }
       }
       Row {
-        anchors.left: parent.left
-        anchors.leftMargin: root.procTrustX
+        id: prTags
+        // Right-anchored against the metric block, mirroring AppRow.
+        anchors.right: parent.right
+        anchors.rightMargin: root.trustInset
         anchors.verticalCenter: parent.verticalCenter
         spacing: Style.space(4)
       Rectangle {
         visible: pr.disabled
-        width: prDisTxt.implicitWidth + Style.space(10)
+        width: pr.disabled ? prDisTxt.implicitWidth + Style.space(10) : 0
         height: Style.space(14)
         radius: Style.space(7)
         color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.14)
@@ -5025,7 +5127,7 @@ PanelWindow {
       }
       Rectangle {
         visible: pr.verified
-        width: prVerTxt.implicitWidth + Style.space(12)
+        width: pr.verified ? prVerTxt.implicitWidth + Style.space(12) : 0
         height: Style.space(16)
         radius: Style.space(8)
         // Solid, high-contrast green so the trusted state stays legible even
@@ -5044,7 +5146,7 @@ PanelWindow {
       }
       Rectangle {
         visible: !pr.verified
-        width: prUnsTxt.implicitWidth + Style.space(10)
+        width: !pr.verified ? prUnsTxt.implicitWidth + Style.space(10) : 0
         height: Style.space(14)
         radius: Style.space(7)
         color: root.warnSoft
@@ -5079,7 +5181,7 @@ PanelWindow {
       }
       Rectangle {
         visible: pr.instances > 1
-        width: Style.space(20)
+        width: pr.instances > 1 ? Style.space(20) : 0
         height: Style.space(14)
         radius: Style.space(7)
         color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.10)
