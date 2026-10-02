@@ -4402,101 +4402,148 @@ PanelWindow {
         Repeater {
           visible: dp.procOpen
           model: dp.procOpen ? dp.procShown() : []
-          delegate: Column {
+          delegate: Rectangle {
+            id: dpProcRow
             width: dpInfo.width
-            spacing: Style.space(1)
-            Rectangle {
-              width: parent.width
-              height: Style.space(44)
-              radius: Style.space(10)
-              color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.08)
-              Row {
-                anchors.top: parent.top
-                anchors.topMargin: Style.space(5)
+            height: Style.space(50)
+            radius: Style.cornerRadius
+            // Flat at rest like the app rows; only hover adds a tint.
+            color: dpProcHover.containsMouse
+                   ? Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.11)
+                   : "transparent"
+            Behavior on color { ColorAnimation { duration: 60 } }
+            MouseArea {
+              id: dpProcHover
+              anchors.fill: parent
+              hoverEnabled: true
+              acceptedButtons: Qt.NoButton
+              preventStealing: true
+            }
+
+            // Line 1 — identity on the left, the numbers that matter on the
+            // right. The previous layout chained seven unconstrained Texts in a
+            // Row, so they overflowed the panel and the last one was clipped
+            // mid-word (elide does nothing without a constrained width).
+            Item {
+              anchors.top: parent.top
+              anchors.topMargin: Style.space(7)
+              anchors.left: parent.left
+              anchors.leftMargin: Style.space(8)
+              anchors.right: parent.right
+              anchors.rightMargin: Style.space(8)
+              height: Style.space(16)
+
+              Text {
+                id: dpPid
                 anchors.left: parent.left
-                anchors.leftMargin: Style.space(8)
-                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: "#" + modelData.pid
+                color: root.fg
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+              Rectangle {
+                id: dpStateChip
+                anchors.left: dpPid.right
+                anchors.leftMargin: Style.space(6)
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.max(Style.space(44), dpStateText.implicitWidth + Style.space(12))
+                height: Style.space(15)
+                radius: height / 2
+                color: modelData.state === "Z"
+                       ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.14)
+                       : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
+                Text {
+                  id: dpStateText
+                  anchors.centerIn: parent
+                  text: modelData.state_label
+                  color: modelData.state === "Z" ? root.urgent : root.dim1
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+              Text {
+                anchors.left: dpStateChip.right
+                anchors.leftMargin: Style.space(6)
+                anchors.right: dpMetrics.left
                 anchors.rightMargin: Style.space(8)
-                spacing: Style.space(6)
+                anchors.verticalCenter: parent.verticalCenter
+                text: modelData.user
+                color: root.dim1
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+              // Right-aligned figures: uptime · memory · cpu, most action-relevant
+              // last. Width is bounded so nothing can spill past the row.
+              Row {
+                id: dpMetrics
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(8)
                 Text {
-                  text: "#" + modelData.pid
-                  color: root.fg
-                  font.family: root.contentFontFamily
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                }
-                Rectangle {
-                  width: Math.max(Style.space(46), stateChipText.implicitWidth + Style.space(12))
-                  height: Style.space(14)
-                  radius: Style.space(7)
-                  color: modelData.state === "Z"
-                      ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.12)
-                      : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.12)
-                  Text {
-                    id: stateChipText
-                    anchors.centerIn: parent
-                    text: modelData.state_label
-                    color: modelData.state === "Z" ? root.urgent : root.dim1
-                    font.family: root.contentFontFamily
-                    font.pixelSize: Style.font.caption
-                  }
-                }
-                Text {
-                  text: modelData.user
-                  color: root.dim1
-                  font.family: root.contentFontFamily
-                  font.pixelSize: Style.font.caption
-                }
-                Text {
-                  visible: modelData.threads > 1
-                  text: "·  " + modelData.threads + " threads"
+                  visible: modelData.elapsed_s > 0
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "up " + root.fmtDur(modelData.elapsed_s)
                   color: root.dim2
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.caption
                 }
                 Text {
                   visible: modelData.rss_mb > 0
-                  text: "·  " + modelData.rss_mb + " MB"
-                  color: root.dim2
-                  font.family: root.contentFontFamily
-                  font.pixelSize: Style.font.caption
-                }
-                Text {
-                  visible: modelData.elapsed_s > 0
-                  text: "·  up " + root.fmtDur(modelData.elapsed_s)
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: modelData.rss_mb + " MB"
                   color: root.dim2
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.caption
                 }
                 Text {
                   visible: modelData.cpu_s > 0
-                  text: "·  " + (modelData.cpu_s >= 10 ? Math.round(modelData.cpu_s) : modelData.cpu_s) + "s cpu"
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: (modelData.cpu_s >= 10 ? Math.round(modelData.cpu_s) : modelData.cpu_s) + "s cpu"
                   color: root.dim2
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.caption
-                }
-                Text {
-                  visible: modelData.unit !== ""
-                  text: "·  " + modelData.unit
-                  color: root.dim2
-                  font.family: root.contentFontFamily
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideRight
+                  font.bold: true
                 }
               }
-              Text {
-                anchors.left: parent.left
-                anchors.leftMargin: Style.space(8)
-                anchors.right: parent.right
-                anchors.rightMargin: Style.space(8)
-                anchors.top: parent.top
-                anchors.topMargin: Style.space(22)
-                text: modelData.cmdline
-                color: root.dim2
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
+            }
+
+            // Line 2 — the full command line, elided against the real row width.
+            Text {
+              anchors.left: parent.left
+              anchors.leftMargin: Style.space(8)
+              anchors.right: parent.right
+              anchors.rightMargin: Style.space(8)
+              anchors.top: parent.top
+              anchors.topMargin: Style.space(27)
+              text: modelData.cmdline
+              color: root.dim2
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
+
+            // Line 3 — only the extras that did not fit above (threads, unit).
+            Text {
+              visible: (modelData.threads > 1 || (modelData.unit !== "" && modelData.unit))
+              anchors.left: parent.left
+              anchors.leftMargin: Style.space(8)
+              anchors.right: parent.right
+              anchors.rightMargin: Style.space(8)
+              anchors.top: parent.top
+              anchors.topMargin: Style.space(41)
+              text: {
+                var extra = []
+                if (modelData.threads > 1) extra.push(modelData.threads + " threads")
+                if (modelData.unit) extra.push(modelData.unit)
+                return extra.join("   ·   ")
               }
+              color: root.dim2
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
             }
           }
         }
