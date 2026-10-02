@@ -1385,8 +1385,8 @@ PanelWindow {
 
           HistoryGraph {
             id: graph
-            anchors.top: root.compact ? parent.top : metricRow.bottom
-            anchors.topMargin: root.compact ? 0 : Style.space(10)
+            anchors.top: root.compact ? parent.top : homeHint.bottom
+            anchors.topMargin: root.compact ? 0 : Style.space(8)
             // Flexible: the chart takes whatever height the fixed-size strips and
             // the fixed-height process list below it leave over. Anchored to
             // tempStrip.top, which is itself anchored downward, so the chain is
@@ -5056,7 +5056,11 @@ PanelWindow {
       var ctx = getContext("2d")
       ctx.reset()
       var w = width, h = height
-      var topPad = 4, bottomPad = 18, leftPad = 8, rightPad = 8
+      // topPad only needs to clear the topmost y-axis label. The event markers sit
+      // just INSIDE the plot with their guide running continuously down to the
+      // curve — an earlier version floated the dot above the top gridline and
+      // started the guide below it, which left a visible gap at the axis.
+      var topPad = 8, bottomPad = 18, leftPad = 8, rightPad = 8
       var plotW = Math.max(10, w - leftPad - rightPad)
       var plotH = Math.max(10, h - bottomPad - topPad)
       var yMax = hg.maxValue > 0 ? hg.maxValue : 10
@@ -5185,7 +5189,9 @@ PanelWindow {
           var pinBase = pinVal >= 0
               ? topPad + plotH - Math.max(0, Math.min(yMax, pinVal)) / yMax * plotH
               : topPad + plotH - 1
-          var pinTop = topPad + 16
+          // Guide starts at the marker itself so the dot and its trail read as one
+          // connected mark.
+          var pinTop = topPad + 8
           var pinEnd = Math.max(pinTop, pinBase - 4)
           // Gradient guide: opaque-ish at the marker, fading to nothing where
           // it reaches the data, so it guides the eye instead of cutting it.
@@ -5198,8 +5204,8 @@ PanelWindow {
           ctx.moveTo(pinX, pinTop)
           ctx.lineTo(pinX, pinEnd)
           ctx.stroke()
-          // Ringed dot marker sitting just below the top axis.
-          var mY = topPad + 9
+          // Ringed dot marker at the head of its own guide, inside the plot.
+          var mY = topPad + 8
           var mR = 3
           ctx.fillStyle = root.hexRgba(pinCol, 0.95)
           ctx.beginPath()
@@ -5249,7 +5255,9 @@ PanelWindow {
         var pillText = root.fmtTime(hg.viewStart) + " – " + root.fmtTime(hg.viewEnd) + "   ↺ reset"
         ctx.font = "9px " + root.contentFontFamily
         var tw = ctx.measureText(pillText).width
-        var pX = leftPad, pY = 4, pH = 17, pW = tw + 16
+        // Sits below the marker lane so it never collides with a marker dot or the
+        // top gridline value.
+        var pX = leftPad, pY = topPad + 20, pH = 17, pW = tw + 16
         ctx.beginPath()
         if (ctx.roundRect) {
           ctx.roundRect(pX, pY, pW, pH, pH / 2)
