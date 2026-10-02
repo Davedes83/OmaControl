@@ -104,8 +104,8 @@ PanelWindow {
 
   // Leading geometry of the app/process row text block. Declared once here so the
   // rows and the ColHeader labels can never drift apart when the avatar changes.
-  // The *width* of the name block is deliberately not a constant: it absorbs
-  // whatever the metric columns leave over (see nameWidth below).
+  // The name block's *trailing* edge is not a constant: it is anchored to the
+  // trust-chip slot, so it always meets the chips at a fixed gap (see below).
   readonly property real rowAvatarSize: Style.space(26)
   // 8 (left pad) + 26 (avatar) + 6 (gap) + 8 (run dot) + 8 (gap)
   readonly property real rowLead: Style.space(8) + rowAvatarSize + Style.space(6) + Style.space(8) + Style.space(8)
@@ -304,30 +304,41 @@ PanelWindow {
   // ---- Horizontal fit of a row: name block | trust chips | metric columns
   // The metric columns (PID..CPU) are pinned to the row's right edge as one
   // evenly spaced block, so everything between `rowLead` and the PID column
-  // belongs to the name block and the trust chips. The name width used to be a
-  // fixed constant (240 for apps, 160 for processes), which on a wide card left
-  // a dead gap between the chips and the PID column. Deriving both from the
-  // leftover width instead is what makes the row fit its card at any size.
+  // belongs to the name block and the trust-chip slot. The name width used to be
+  // a fixed constant (240 for apps, 160 for processes) which, combined with the
+  // hand-tuned column insets, left a dead gap between the chips and the PID
+  // column. The chip column is now a FIXED-WIDTH slot pinned to the right, and
+  // the name block simply fills the space between `rowLead` and that slot — so
+  // the row is flush at any card width and the chips stay in a clean column
+  // regardless of how many chips a row shows.
   // Declared after procColumns so the insets are guaranteed to exist first.
   readonly property real metricsInset: colRight("pid") + colWidth("pid")
-  readonly property real chipGap: Style.space(20)   // chips -> PID column
-  readonly property real nameGap: Style.space(20)   // name block -> chips
-  readonly property real minNameW: Style.space(150) // never squeeze the name away
-  // Inset from the row's RIGHT edge to the trailing edge of the trust-chip
-  // column. This is exactly the quantity anchors.rightMargin expects, so the
-  // chip rows and the TRUST header label both consume it directly and stay
-  // locked together. (Deriving it from a width argument and feeding it back as a
-  // rightMargin double-counts the inset and stacks the chips on the columns.)
+  readonly property real chipGap: Style.space(20)   // slot -> PID column
+  readonly property real nameGap: Style.space(20)   // name block -> slot
+  // Reserved width of the trust-chip column. Sized to snugly hold the common
+  // chip sets (a trust chip on its own, or one plus the "×N" instance counter /
+  // a single perm chip) so there is no dead space beside a lone chip, while
+  // still absorbing the extra chips a busier row adds. Because it is a
+  // constant, every row's first chip starts at the same x — the chips are
+  // LEFT-aligned in the slot, which is what keeps the column visually straight
+  // regardless of how many chips a given row shows.
+  readonly property real chipSlotW: Style.space(140)
+  // Inset from the row's RIGHT edge to the chip slot's RIGHT (trailing) edge.
+  // The slot's width is added on top of this to get its leading edge, which is
+  // what the TRUST header label and the name block's right anchor are computed
+  // from — so all three stay locked together.
   readonly property real trustInset: metricsInset + chipGap
 
-  // Width left for the name/subtitle block in a row `w` wide once `chipW` of
-  // chips are placed: the span from the row lead to the chips' leading edge,
-  // minus the gap. Nothing else in the row is fixed-width, so this is what
-  // keeps the row flush with no dead gap in the middle.
-  function nameWidth(w, chipW) {
-    return Math.max(minNameW,
-                    (w - root.trustInset) - (chipW || 0) - root.nameGap - rowLead)
-  }
+  // Shared geometry for the Verified / Unsigned trust badges. The two used to
+  // be sized independently (different padding, height, corner radius and — in
+  // the process list — different text weight and no icon on Unsigned), which
+  // made the unsigned badge read as a visibly smaller, lesser chip. Sizing both
+  // from one place guarantees they render identically.
+  readonly property real trustChipH: Style.space(16)
+  readonly property real trustChipR: Style.space(8)
+  // Fixed badge width: enough for the longer of the two labels plus its icon, so
+  // Verified and Unsigned are exactly the same size whichever is showing.
+  readonly property real trustChipW: Style.space(116)
   readonly property var filteredAlerts: root.computeAlerts()
   readonly property int activeAlertCount: root.filteredAlerts.length
 
@@ -3326,9 +3337,11 @@ PanelWindow {
         anchors.left: arRunDot.right
         anchors.leftMargin: Style.space(8)
         anchors.verticalCenter: parent.verticalCenter
-        // Fills the leftover width between the row lead and the trust chips, so
-        // long names get room and no dead gap opens up mid-row.
-        width: root.nameWidth(arBase.width, arTags.implicitWidth)
+        // Bounded on BOTH sides — left at the row lead, right at the chip slot's
+        // leading edge — so a long app name elides instead of running underneath
+        // the trust chips.
+        anchors.right: arTagSlot.left
+        anchors.rightMargin: root.nameGap
         spacing: 1
 
         Text {
@@ -3354,16 +3367,21 @@ PanelWindow {
         }
       }
 
-      Row {
-        id: arTags
-        // Right-anchored against the metric block, so the chips sit flush
-        // against the PID column. The chips' leading edge then floats with
-        // whatever set is shown, and the name block above is measured against
-        // this row's real width rather than a fixed guess.
-        anchors.right: parent.right
-        anchors.rightMargin: root.trustInset
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: Style.space(4)
+      // Fixed-width chip slot pinned to the right edge, with the chips
+        // LEFT-aligned inside it, mirroring ProcRow — so the chips form a
+        // straight column down the list no matter what each row shows.
+        Item {
+          id: arTagSlot
+          anchors.right: parent.right
+          anchors.rightMargin: root.trustInset
+          anchors.verticalCenter: parent.verticalCenter
+          width: root.chipSlotW
+          height: Style.space(16)
+          Row {
+            id: arTags
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(4)
         Rectangle {
           visible: ar.app.disabled
           // Collapsed while hidden: a Row still reserves space for invisible
@@ -3383,9 +3401,10 @@ PanelWindow {
         }
         Rectangle {
           visible: ar.app.verified
-          width: ar.app.verified ? arVerTxt.implicitWidth + Style.space(12) : 0
-          height: Style.space(16)
-          radius: Style.space(8)
+          // Same fixed size as the Unsigned badge below — see trustChipW.
+          width: ar.app.verified ? root.trustChipW : 0
+          height: root.trustChipH
+          radius: root.trustChipR
           // Solid, high-contrast green so the trusted state stays legible even
           // when the row itself is tinted red for high CPU.
           color: root.ok
@@ -3401,9 +3420,11 @@ PanelWindow {
         }
         Rectangle {
           visible: ar.unsigned
-          width: ar.unsigned ? arUnsTxt.implicitWidth + Style.space(12) : 0
-          height: Style.space(16)
-          radius: Style.space(8)
+          // Identical geometry to the Verified badge, so the two states are the
+          // same size; only the palette differs.
+          width: ar.unsigned ? root.trustChipW : 0
+          height: root.trustChipH
+          radius: root.trustChipR
           color: root.warnSoft
           border.width: 1
           border.color: Qt.rgba(root.warn.r, root.warn.g, root.warn.b, 0.5)
@@ -3433,6 +3454,7 @@ PanelWindow {
               font.pixelSize: Style.font.caption
             }
           }
+        }
         }
       }
 
@@ -4963,14 +4985,14 @@ PanelWindow {
       font.pixelSize: Style.font.subtitle
       font.bold: true
     }
-    // TRUST is right-anchored onto the same inset the chip rows use, so the
-    // header tracks the chips instead of a hard-coded column that drifts.
+    // TRUST is LEFT-aligned to the leading edge of the same chip slot the rows
+    // use, so the header sits directly over the chips.
     Text {
       visible: ch.midLabel !== ""
-      anchors.right: parent.right
-      anchors.rightMargin: root.trustInset
+      anchors.left: parent.left
+      anchors.leftMargin: Math.max(Style.space(10),
+                                   ch.width - root.trustInset - root.chipSlotW)
       anchors.verticalCenter: parent.verticalCenter
-      horizontalAlignment: Text.AlignRight
       text: ch.midLabel
       color: root.dim2
       font.family: root.contentFontFamily
@@ -5072,13 +5094,15 @@ PanelWindow {
       }
 
       // Two-tone hierarchy, AppControl-style: bold name with a muted secondary
-      // line beneath it. The width is measured against the chips to its right so
-      // the two blocks meet at a fixed gap instead of leaving a dead void.
+      // line beneath it. Bounded on BOTH sides — left at the row lead, right at
+      // the chip slot's leading edge — so a long process name elides instead of
+      // running underneath the trust chips.
       Column {
         anchors.left: parent.left
         anchors.leftMargin: root.rowLead
+        anchors.right: prTagSlot.left
+        anchors.rightMargin: root.nameGap
         anchors.verticalCenter: parent.verticalCenter
-        width: root.nameWidth(pr.width, prTags.implicitWidth)
         spacing: 1
 
         Text {
@@ -5103,13 +5127,22 @@ PanelWindow {
           font.pixelSize: Style.font.caption
         }
       }
-      Row {
-        id: prTags
-        // Right-anchored against the metric block, mirroring AppRow.
+      // Fixed-width chip slot pinned to the right edge, with the chips
+      // LEFT-aligned inside it. Every row's first chip therefore starts at the
+      // same x (a clean column) and extra chips ("×4", Cam/Mic) grow rightward
+      // into the reserved headroom instead of shifting the whole set left.
+      Item {
+        id: prTagSlot
         anchors.right: parent.right
         anchors.rightMargin: root.trustInset
         anchors.verticalCenter: parent.verticalCenter
-        spacing: Style.space(4)
+        width: root.chipSlotW
+        height: Style.space(16)
+        Row {
+          id: prTags
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(4)
       Rectangle {
         visible: pr.disabled
         width: pr.disabled ? prDisTxt.implicitWidth + Style.space(10) : 0
@@ -5127,9 +5160,9 @@ PanelWindow {
       }
       Rectangle {
         visible: pr.verified
-        width: pr.verified ? prVerTxt.implicitWidth + Style.space(12) : 0
-        height: Style.space(16)
-        radius: Style.space(8)
+        width: pr.verified ? root.trustChipW : 0
+        height: root.trustChipH
+        radius: root.trustChipR
         // Solid, high-contrast green so the trusted state stays legible even
         // when the row itself is tinted red for high CPU.
         color: root.ok
@@ -5137,7 +5170,7 @@ PanelWindow {
         Text {
           id: prVerTxt
           anchors.centerIn: parent
-          text: "\uf058 Verified"
+          text: "\uf058  Verified"
           color: root.onColor(root.ok)
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
@@ -5146,19 +5179,23 @@ PanelWindow {
       }
       Rectangle {
         visible: !pr.verified
-        width: !pr.verified ? prUnsTxt.implicitWidth + Style.space(10) : 0
-        height: Style.space(14)
-        radius: Style.space(7)
+        // Identical geometry, weight and icon to the Verified badge above; only
+        // the palette differs. Unsigned used to be 2px shorter, unbold, tighter
+        // and icon-less, which made it look like a different, smaller badge.
+        width: !pr.verified ? root.trustChipW : 0
+        height: root.trustChipH
+        radius: root.trustChipR
         color: root.warnSoft
         border.width: 1
         border.color: Qt.rgba(root.warn.r, root.warn.g, root.warn.b, 0.45)
         Text {
           id: prUnsTxt
           anchors.centerIn: parent
-          text: "Unsigned"
+          text: "\uf071  Unsigned"
           color: root.warn
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
+          font.bold: true
         }
       }
       Repeater {
@@ -5192,6 +5229,7 @@ PanelWindow {
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
         }
+      }
       }
     }
     Sparkline {
