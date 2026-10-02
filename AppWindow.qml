@@ -116,6 +116,22 @@ PanelWindow {
   readonly property real procNameWidth: Style.space(160)
   readonly property real procTrustX: rowLead + procNameWidth + Style.space(8)
 
+  // ---- Activity column vertical budget
+  // The Activity page stacks a metric tab row, the history chart, the
+  // temperature strip, the mini overview and the process list. The list is a
+  // FIXED height showing `procRowsVisible` rows and scrolls for the rest; the
+  // chart is the flexible element that absorbs whatever vertical space is left
+  // over. That keeps the list from collapsing to one row on short screens and
+  // stops the chart from starving it on tall ones.
+  readonly property int procRowsVisible: 5
+  readonly property real procRowH: Style.space(34)
+  readonly property real procRowSpacing: Style.space(2)
+  readonly property real procListH: procRowsVisible * (procRowH + procRowSpacing) - procRowSpacing
+  // The chrome stacked above the list inside the pane: search/sort row, the
+  // "Running processes ..." line, and the column header.
+  readonly property real paneHeadH: Style.space(30) + Style.space(4) + Style.space(14) + Style.space(6) + Style.space(18) + Style.space(2)
+  readonly property real paneH: paneHeadH + procListH
+
   // Border specs for the app's card + tooltip surfaces, resolved once from the
   // theme's [popups] / [tooltip] roles so they honor per-theme border styling.
   readonly property var cardBorderSpec: Border.localOrSurfaceSpec("popups", "border", surfaceBorder, Color.popups.border, Math.max(1, Style.space(2)))
@@ -1241,7 +1257,7 @@ PanelWindow {
     id: card
     z: 1
     width: Math.min(root.compact ? Style.space(900) : Style.space(1100), root.width - Style.space(40))
-    height: Math.min(root.compact ? Style.space(170) : Style.space(740), root.height - Style.space(40))
+    height: Math.min(root.compact ? Style.space(170) : Style.space(880), root.height - Style.space(40))
     anchors.centerIn: parent
     radius: Style.cornerRadius
     color: root.surface
@@ -1369,13 +1385,16 @@ PanelWindow {
 
           HistoryGraph {
             id: graph
-            anchors.top: root.compact ? parent.top : homeHint.bottom
-            anchors.topMargin: root.compact ? 0 : Style.space(8)
+            anchors.top: root.compact ? parent.top : metricRow.bottom
+            anchors.topMargin: root.compact ? 0 : Style.space(10)
+            // Flexible: the chart takes whatever height the fixed-size strips and
+            // the fixed-height process list below it leave over. Anchored to
+            // tempStrip.top, which is itself anchored downward, so the chain is
+            // one-directional and cannot form an anchor loop.
+            anchors.bottom: root.compact ? parent.bottom : tempStrip.top
+            anchors.bottomMargin: root.compact ? 0 : Style.space(4)
             anchors.left: parent.left
             anchors.right: parent.right
-            height: root.compact
-                ? parent.height - Style.space(4)
-                : Style.space(275)
             pts: root.chartPts
             lineColor: root.accent
             events: root.chartEvents
@@ -1407,11 +1426,11 @@ PanelWindow {
           TemperatureStrip {
             id: tempStrip
             visible: !root.compact
-            anchors.top: graph.bottom
-            anchors.topMargin: Style.space(4)
+            anchors.bottom: mini.top
+            anchors.bottomMargin: Style.space(6)
             anchors.left: parent.left
             anchors.right: parent.right
-            height: Style.space(34)
+            height: Style.space(24)
             pts: root.tempSeriesFor(root.chartWindow)
             domainStart: graph.domStart
             domainEnd: graph.domEnd
@@ -1420,11 +1439,11 @@ PanelWindow {
           MiniOverview {
             id: mini
             visible: !root.compact
-            anchors.top: tempStrip.bottom
-            anchors.topMargin: Style.space(6)
+            anchors.bottom: pane.top
+            anchors.bottomMargin: Style.space(8)
             anchors.left: parent.left
             anchors.right: parent.right
-            height: Style.space(40)
+            height: Style.space(28)
             pts: root.chartPts
             graph: graph
           }
@@ -1432,16 +1451,19 @@ PanelWindow {
           Item {
             id: pane
             visible: !root.compact
-            anchors.top: mini.bottom
-            anchors.topMargin: Style.space(8)
+            // Fixed height: exactly `procRowsVisible` rows plus the header chrome.
+            // Anchored to the bottom of the column so the chart above absorbs the
+            // remaining vertical space.
+            anchors.bottom: parent.bottom
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.bottom: parent.bottom
+            height: root.paneH
 
             Row {
               id: paneHeader
               z: 90
-              anchors.top: parent.top
+              anchors.bottom: paneTitle.top
+              anchors.bottomMargin: Style.space(4)
               anchors.left: parent.left
               anchors.right: parent.right
               spacing: Style.space(8)
@@ -1495,8 +1517,8 @@ PanelWindow {
 
             Text {
               id: paneTitle
-              anchors.top: paneHeader.bottom
-              anchors.topMargin: Style.space(4)
+              anchors.bottom: procHeader.top
+              anchors.bottomMargin: Style.space(6)
               anchors.left: parent.left
               anchors.right: parent.right
               text: root.drillProcs
@@ -1514,8 +1536,8 @@ PanelWindow {
 
             ColHeader {
               id: procHeader
-              anchors.top: paneTitle.bottom
-              anchors.topMargin: Style.space(6)
+              anchors.bottom: procList.top
+              anchors.bottomMargin: Style.space(2)
               anchors.left: parent.left
               anchors.right: parent.right
               leftLabel: "PROCESS"
@@ -1525,13 +1547,15 @@ PanelWindow {
 
             ListView {
               id: procList
-              anchors.top: procHeader.bottom
-              anchors.topMargin: Style.space(2)
+              anchors.bottom: parent.bottom
               anchors.left: parent.left
               anchors.right: parent.right
-              anchors.bottom: parent.bottom
+              // Fixed to `procRowsVisible` rows — the list no longer stretches to
+              // fill leftover space, so it always shows a predictable number of
+              // processes and scrolls for the rest.
+              height: root.procListH
               clip: true
-              spacing: Style.space(2)
+              spacing: root.procRowSpacing
               model: root.drillProcs !== null ? root.drillProcs : root.filteredProcs
               delegate: ProcRow {
                 width: procList.width
@@ -4618,7 +4642,8 @@ PanelWindow {
     signal kill(string name)
     signal disable(string name)
     signal enable(string name)
-    implicitHeight: Style.space(34)
+    // Tied to root.procRowH so the fixed-height list math stays exact.
+    implicitHeight: root.procRowH
     width: parent ? parent.width : 0
 
     BorderSurface {
