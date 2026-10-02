@@ -2711,13 +2711,17 @@ PanelWindow {
           anchors.fill: parent
           color: "transparent"
         }
+        // Fixed-width tabs in a centred group. Previously each tab took a fifth
+        // of the whole 1100px card, which left ~180px of dead space between a
+        // ~40px pill and made the rail read as scattered dots.
         Row {
-          anchors.fill: parent
-          NavTab { width: parent.width / 5; height: parent.height; iconText: "\uf201"; label: "Activity"; active: root.activeTab === 0; onChosen: root.activeTab = 0 }
-          NavTab { width: parent.width / 5; height: parent.height; iconText: "\uf00a"; label: "Apps"; active: root.activeTab === 1; onChosen: root.activeTab = 1 }
-          NavTab { width: parent.width / 5; height: parent.height; iconText: "\uf0f3"; label: "Alerts"; badge: root.alertBadge > 0 ? root.alertBadge : -1; active: root.activeTab === 2; onChosen: root.activeTab = 2 }
-          NavTab { width: parent.width / 5; height: parent.height; iconText: "\uf017"; label: "Events"; badge: root.eventBadge > 0 ? root.eventBadge : -1; active: root.activeTab === 3; onChosen: root.activeTab = 3 }
-          NavTab { width: parent.width / 5; height: parent.height; iconText: "\uf013"; label: "Settings"; active: root.activeTab === 4; onChosen: root.activeTab = 4 }
+          anchors.centerIn: parent
+          spacing: Style.space(6)
+          NavTab { width: Style.space(112); height: Style.space(60); iconText: "\uf201"; label: "Activity"; active: root.activeTab === 0; onChosen: root.activeTab = 0 }
+          NavTab { width: Style.space(112); height: Style.space(60); iconText: "\uf00a"; label: "Apps"; active: root.activeTab === 1; onChosen: root.activeTab = 1 }
+          NavTab { width: Style.space(112); height: Style.space(60); iconText: "\uf0f3"; label: "Alerts"; badge: root.alertBadge > 0 ? root.alertBadge : -1; active: root.activeTab === 2; onChosen: root.activeTab = 2 }
+          NavTab { width: Style.space(112); height: Style.space(60); iconText: "\uf017"; label: "Events"; badge: root.eventBadge > 0 ? root.eventBadge : -1; active: root.activeTab === 3; onChosen: root.activeTab = 3 }
+          NavTab { width: Style.space(112); height: Style.space(60); iconText: "\uf013"; label: "Settings"; active: root.activeTab === 4; onChosen: root.activeTab = 4 }
         }
       }
     }
@@ -2985,20 +2989,23 @@ PanelWindow {
     signal chosen()
     color: "transparent"
     property bool hovered: false
+    // Every tab is the same size and every pill is the same size, so the rail
+    // reads as one uniform unit. Previously the pill hugged the label, so
+    // "Activity" got a wide pill and "Apps" a narrow one.
+    readonly property real pillW: Style.space(112)
+    readonly property real pillH: Style.space(52)
 
     Item {
       id: ntBody
       anchors.centerIn: parent
-      width: Math.max(ntIcon.implicitWidth, ntLabel.implicitWidth)
-      height: ntIcon.height + Style.space(2) + ntLabel.height
+      width: nt.pillW
+      height: nt.pillH
 
       // Filled pill behind the icon + label for the active tab; a lighter
       // hover-cursor tint takes over when the tab is not the current one.
       Rectangle {
         visible: nt.active || nt.hovered
-        anchors.centerIn: parent
-        width: ntBody.width + Style.space(16)
-        height: Style.space(32)
+        anchors.fill: parent
         radius: height / 2
         color: nt.active
             ? root.accentSoft
@@ -3010,17 +3017,18 @@ PanelWindow {
         id: ntIcon
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.top: parent.top
+        anchors.topMargin: Style.space(9)
         text: nt.iconText
         color: nt.active ? root.accent : (nt.hovered ? root.fg : root.dim1)
         font.family: root.contentFontFamily
-        font.pixelSize: Style.font.body
+        font.pixelSize: Style.font.heading
       }
 
       Rectangle {
         visible: nt.badge >= 0
-        width: Style.space(15)
-        height: Style.space(15)
-        radius: Style.space(8)
+        width: Style.space(18)
+        height: Style.space(18)
+        radius: width / 2
         color: root.urgent
         anchors.left: ntIcon.right
         anchors.leftMargin: Style.space(2)
@@ -3029,21 +3037,24 @@ PanelWindow {
         Text {
           anchors.centerIn: parent
           text: nt.badge
-          color: root.bg
+          color: root.onColor(root.urgent)
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
+          font.bold: true
         }
       }
 
       Text {
         id: ntLabel
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.top: ntIcon.bottom
-        anchors.topMargin: Style.space(2)
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Style.space(8)
+        width: parent.width
+        horizontalAlignment: Text.AlignHCenter
         text: nt.label
         color: nt.active ? root.accent : (nt.hovered ? root.dim1 : root.dim2)
         font.family: root.contentFontFamily
-        font.pixelSize: Style.font.caption
+        font.pixelSize: Style.font.body
       }
     }
 
