@@ -233,6 +233,23 @@ PanelWindow {
     "OMCONTROL_DATA_DIR": root.dataDir,
     "LC_ALL": "C"
   })
+  // The reveal action is the one helper that must launch a GUI client, and a
+  // GUI client cannot reach the compositor without the session variables that
+  // trustedEnv deliberately strips. So it gets a separate, still-explicit
+  // environment: trustedEnv plus exactly the display/runtime vars needed, and
+  // nothing else. Every value is absolute and comes from the shell's own
+  // environment, never from the sampled data or user input.
+  readonly property var guiEnv: ({
+    "PATH": "/usr/bin:/bin",
+    "HOME": Quickshell.env("HOME"),
+    "LC_ALL": "C",
+    "WAYLAND_DISPLAY": Quickshell.env("WAYLAND_DISPLAY"),
+    "DISPLAY": Quickshell.env("DISPLAY"),
+    "XDG_RUNTIME_DIR": Quickshell.env("XDG_RUNTIME_DIR"),
+    "XDG_DATA_DIRS": Quickshell.env("XDG_DATA_DIRS"),
+    "XDG_CURRENT_DESKTOP": Quickshell.env("XDG_CURRENT_DESKTOP"),
+    "DBUS_SESSION_BUS_ADDRESS": Quickshell.env("DBUS_SESSION_BUS_ADDRESS")
+  })
   function capText(text) {
     return typeof text === "string" && text.length > root.maxOutputBytes
       ? text.slice(0, root.maxOutputBytes) : (text || "")
@@ -902,6 +919,67 @@ PanelWindow {
     return out
   }
 
+  // Reveal a path in the desktop file manager.
+  // The user-facing goal is "take me to the file location", so we hand the
+  // CONTAINING DIRECTORY to the desktop's own handler rather than the binary —
+  // a bare ELF has no .desktop association, so xdg-open on the file itself
+  // would either do nothing or fall through to a random application.
+  //
+  // Always `gio open` unless explicitly overridden: gio resolves the
+  // inode/directory MIME type properly, whereas xdg-open on a bare directory
+  // path mis-routed to the browser on this system. gio picks the user's real
+  // default file manager.
+  //
+  // OMCONTROL_FILE_MANAGER=nautilus|caja forces a specific manager, which
+  // additionally gets the nicer "--select the file in its folder" behaviour.
+  // (nautilus is installed here but cannot start — "Failed to initialize
+  // display server" — so it is never chosen automatically.)
+  //
+  // Launched via setsid so the opener becomes its own session leader and keeps
+  // running after the wrapper exits — without it the file manager is torn down
+  // with the Process and no window ever appears. The timeout only bounds
+  // gio's own startup, not the manager's lifetime.
+  //
+  // Only ever called with a path that came from /proc via process-detail.sh —
+  // never user input — and it still goes out as an argv vector, so a crafted
+  // path cannot smuggle in options the way a shell string would.
+  function revealPath(path) {
+    if (!path || path.charAt(0) !== "/") return false
+    var manager = Quickshell.env("OMCONTROL_FILE_MANAGER") || ""
+    if (manager === "nautilus" || manager === "caja") {
+      actionProc.command = ["/usr/bin/setsid", "/usr/bin/timeout", "-k", "2", "10",
+                            "/usr/bin/" + manager, "--select", path]
+    } else {
+      var dir = path
+      if (path.indexOf("/") > 0) dir = path.slice(0, path.lastIndexOf("/"))
+      if (dir === "") dir = "/"
+      actionProc.command = ["/usr/bin/setsid", "/usr/bin/timeout", "-k", "2", "10",
+                            "/usr/bin/gio", "open", dir]
+    }
+    actionProc.running = false
+    actionProc.running = true
+    return true
+  }
+
+  // Resolve which path to reveal for a process row: the binary if we could
+  // read it, otherwise the working directory.
+  function procOpenPath(proc) {
+    if (!proc) return ""
+    if (proc.exe && proc.exe.charAt(0) === "/") return proc.exe
+    if (proc.cwd && proc.cwd.charAt(0) === "/") return proc.cwd
+    return ""
+  }
+
+  // Open the binary of a given pid from the currently loaded process list.
+  // Reachable over IPC so a row's target can be opened from a script.
+  function openProcPath(pid) {
+    var arr = root.procDetail || []
+    for (var i = 0; i < arr.length; i++) {
+      if (Number(arr[i].pid) === Number(pid)) return root.revealPath(root.procOpenPath(arr[i]))
+    }
+    return false
+  }
+
   function toggleProcRows() {
     detailsPanel.procOpen = !detailsPanel.procOpen
     if (!detailsPanel.procOpen) detailsPanel.procShowAll = false
@@ -1228,7 +1306,9 @@ PanelWindow {
   Process {
     id: actionProc
     clearEnvironment: true
-    environment: root.trustedEnv
+    // GUI-capable environment: this process launches a desktop file manager,
+    // which needs the Wayland/X/Runtime session variables.
+    environment: root.guiEnv
   }
   Timer { id: refreshTimer; interval: 5000; repeat: false; running: false
     onTriggered: { if (root.open) sampleProc.running = true }
@@ -4062,6 +4142,15 @@ PanelWindow {
     // The "How to read the values" glossary is reference material, not the
     // reason the user opened the panel, so it starts collapsed.
     property bool legendOpen: false
+    // Pid of the row whose binary was last handed to the desktop opener, shown
+    // as a brief inline confirmation so a click has visible feedback.
+    property int lastRevealed: -1
+    Timer {
+      id: revealTimer
+      interval: 1600
+      repeat: false
+      onTriggered: dp.lastRevealed = -1
+    }
     // Upper bound supplied by the caller (the space between the card's top bar
     // and the bottom nav). The panel grows to fit its content up to this cap
     // and scrolls beyond it, so there is never a dead gap above the buttons.
@@ -4416,8 +4505,17 @@ PanelWindow {
               id: dpProcHover
               anchors.fill: parent
               hoverEnabled: true
-              acceptedButtons: Qt.NoButton
+              acceptedButtons: Qt.LeftButton
+              cursorShape: root.procOpenPath(modelData) !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor
               preventStealing: true
+              // Click reveals the binary with the desktop's default handler.
+              onClicked: {
+                if (dp.procOpenPath(modelData) !== "") {
+                  root.revealPath(dp.procOpenPath(modelData))
+                  dp.lastRevealed = modelData.pid
+                  revealTimer.restart()
+                }
+              }
             }
 
             // Line 1 — identity on the left, the numbers that matter on the
@@ -4510,19 +4608,46 @@ PanelWindow {
               }
             }
 
-            // Line 2 — the full command line, elided against the real row width.
-            Text {
+            // Line 2 — the full command line, elided against the real row width, with a
+            // brief "Opened" confirmation pinned to the right of the same line.
+            Item {
               anchors.left: parent.left
               anchors.leftMargin: Style.space(8)
               anchors.right: parent.right
               anchors.rightMargin: Style.space(8)
               anchors.top: parent.top
               anchors.topMargin: Style.space(27)
-              text: modelData.cmdline
-              color: root.dim2
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.caption
-              elide: Text.ElideRight
+              height: Style.space(14)
+
+              Text {
+                id: dpProcCmd
+                anchors.left: parent.left
+                anchors.right: dpReveal.visible ? dpReveal.left : parent.right
+                anchors.rightMargin: dpReveal.visible ? Style.space(6) : 0
+                anchors.verticalCenter: parent.verticalCenter
+                text: modelData.cmdline
+                // Tints and underlines on hover so the row reads as clickable
+                // (clicking opens this binary with the desktop default handler).
+                color: dpProcHover.containsMouse && dpProcOpenPath(modelData) !== ""
+                       ? root.accent : root.dim2
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.underline: dpProcHover.containsMouse && dpProcOpenPath(modelData) !== ""
+                elide: Text.ElideRight
+              }
+
+              Text {
+                id: dpReveal
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                visible: dp.lastRevealed === modelData.pid
+                         && dpProcOpenPath(modelData) !== ""
+                text: "\uf00c  Opened"
+                color: root.ok
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
             }
 
             // Line 3 — only the extras that did not fit above (threads, unit).

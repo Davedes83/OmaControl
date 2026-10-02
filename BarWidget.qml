@@ -197,11 +197,17 @@ BarWidget {
     function openApp(): void {
       if (appLoader.item) appLoader.item.open = true
     }
-    // Open the app-details panel for a named app. Lets the panel be opened
+    // Open the details panel for a named app. Lets the panel be opened
     // from a keybinding or script without clicking a row.
     function showDetails(name: string): bool {
       if (!appLoader.item || !name) return false
       return appLoader.item.showDetails(String(name))
+    }
+    // Open a process binary (from the open details panel) with the desktop
+    // default handler.
+    function openProcPath(pid: int): bool {
+      if (!appLoader.item || pid === null) return false
+      return appLoader.item.openProcPath(Number(pid))
     }
     function closeApp(): void {
       if (appLoader.item) appLoader.item.open = false
