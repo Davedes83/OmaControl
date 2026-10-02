@@ -68,6 +68,19 @@ PanelWindow {
   }
   function softColor(c, a) { return Qt.rgba(c.r, c.g, c.b, a === undefined ? 0.16 : a) }
 
+  // Monogram avatar colour (AppControl's circular app icons). No icon pipeline
+  // exists in app_meta, so we derive a stable colour per app name from a small
+  // set of fixed hues, blended toward the live accent by the same 22% tint rule
+  // used for the semantic palette — so avatars always look native to the theme
+  // and never appear as pasted-in literals.
+  readonly property var avatarHues: ["#3FB950", "#58A6FF", "#D29922", "#BC8CFF", "#E06C9F", "#2AA198", "#8B7FE8", "#C97B3C"]
+  function avatarColor(name) {
+    var s = String(name || "?")
+    var h = 0
+    for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+    return root.tinted(root.avatarHues[h % root.avatarHues.length])
+  }
+
   readonly property color ok: root.tinted("#3FB950")
   readonly property color warn: root.tinted("#D29922")
   readonly property color info: root.tinted("#58A6FF")
@@ -88,6 +101,20 @@ PanelWindow {
     var lum = 0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b
     return lum > 0.6 ? Qt.rgba(0.06, 0.06, 0.07, 1) : Qt.rgba(1, 1, 1, 1)
   }
+
+  // Leading geometry of the app/process row text block. Declared once here so the
+  // rows, the ColHeader labels and the midX the Apps page passes in can never
+  // drift apart when the avatar or name width changes.
+  readonly property real rowAvatarSize: Style.space(26)
+  readonly property real rowNameWidth: Style.space(240)
+  // 8 (left pad) + 26 (avatar) + 6 (gap) + 8 (run dot) + 8 (gap)
+  readonly property real rowLead: Style.space(8) + rowAvatarSize + Style.space(6) + Style.space(8) + Style.space(8)
+  readonly property real rowTrustX: rowLead + rowNameWidth + Style.space(8)
+
+  // The process list uses the same avatar lead but a narrower name column, so it
+  // gets its own pair of constants rather than magic numbers in three places.
+  readonly property real procNameWidth: Style.space(160)
+  readonly property real procTrustX: rowLead + procNameWidth + Style.space(8)
 
   // Border specs for the app's card + tooltip surfaces, resolved once from the
   // theme's [popups] / [tooltip] roles so they honor per-theme border styling.
@@ -1304,12 +1331,12 @@ PanelWindow {
             anchors.left: parent.left
             spacing: Style.space(12)
 
-            OMCPill { label: "CPU"; value: root.liveValue("cpu") + "%"; active: root.selMetric === "cpu"; hero: root.selMetric === "cpu"; onChosen: { root.selMetric = "cpu"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
-            OMCPill { label: "Memory"; value: root.liveValue("mem") + "%"; active: root.selMetric === "mem"; hero: root.selMetric === "mem"; onChosen: { root.selMetric = "mem"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
-            OMCPill { label: "GPU"; value: root.liveValue("gpu") + "%"; active: root.selMetric === "gpu"; hero: root.selMetric === "gpu"; onChosen: { root.selMetric = "gpu"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
-            OMCPill { label: "Processes"; value: Math.round(root.liveValue("procs")); active: root.selMetric === "procs"; hero: root.selMetric === "procs"; onChosen: { root.selMetric = "procs"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
-            OMCPill { label: "Disk"; value: "\u2193 " + root.fmtNet(root.sample.disk_r) + "  \u2191 " + root.fmtNet(root.sample.disk_w); active: root.selMetric === "disk"; hero: root.selMetric === "disk"; onChosen: { root.selMetric = "disk"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
-            OMCPill { label: "Net"; value: root.liveValue("net"); active: root.selMetric === "net"; hero: root.selMetric === "net"; onChosen: { root.selMetric = "net"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "CPU"; value: root.liveValue("cpu") + "%"; active: root.selMetric === "cpu"; onChosen: { root.selMetric = "cpu"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "Memory"; value: root.liveValue("mem") + "%"; active: root.selMetric === "mem"; onChosen: { root.selMetric = "mem"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "GPU"; value: root.liveValue("gpu") + "%"; active: root.selMetric === "gpu"; onChosen: { root.selMetric = "gpu"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "Processes"; value: Math.round(root.liveValue("procs")); active: root.selMetric === "procs"; onChosen: { root.selMetric = "procs"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "Disk"; value: "\u2193 " + root.fmtNet(root.sample.disk_r) + "  \u2191 " + root.fmtNet(root.sample.disk_w); active: root.selMetric === "disk"; onChosen: { root.selMetric = "disk"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
+            OMCPill { label: "Net"; value: root.liveValue("net"); active: root.selMetric === "net"; onChosen: { root.selMetric = "net"; if (root.rangeSummary) root.rangeSummary = root.buildRangeSummary(root.rangeSummary.t1, root.rangeSummary.t2) } }
           }
 
           Row {
@@ -1348,7 +1375,7 @@ PanelWindow {
             anchors.right: parent.right
             height: root.compact
                 ? parent.height - Style.space(4)
-                : Style.space(235)
+                : Style.space(275)
             pts: root.chartPts
             lineColor: root.accent
             events: root.chartEvents
@@ -1493,7 +1520,7 @@ PanelWindow {
               anchors.right: parent.right
               leftLabel: "PROCESS"
               midLabel: "TRUST"
-              midX: Style.space(168)
+              midX: root.procTrustX
             }
 
             ListView {
@@ -1509,6 +1536,8 @@ PanelWindow {
               delegate: ProcRow {
                 width: procList.width
                 name: modelData.name
+                publisher: modelData.publisher || ""
+                desc: modelData.desc || ""
                 pid: Number(modelData.pid) || 0
                 cpu: modelData.cpu
                 mem: modelData.mem
@@ -1518,7 +1547,7 @@ PanelWindow {
                     ? ((Number(modelData.nr) || 0) + (Number(modelData.nt) || 0)) : -1
                 verified: modelData.verified
                 perms: modelData.perms
-instances: Number(modelData.instances) || 1
+                instances: Number(modelData.instances) || 1
                 disabled: modelData.disabled
                 sparks: root.sparksFor(modelData.name)
                 onDetails: root.detailApp = ({ name: modelData.name,
@@ -1790,7 +1819,7 @@ instances: Number(modelData.instances) || 1
             anchors.right: parent.right
             leftLabel: "APP"
             midLabel: "TRUST"
-            midX: Style.space(248)
+            midX: root.rowTrustX
           }
 
           ListView {
@@ -2734,36 +2763,37 @@ instances: Number(modelData.instances) || 1
   component OMCPill: BorderSurface {
     id: pill
     property bool active: false
-    property bool hero: false
     property string label: ""
     property string value: ""
     property color pillColor: root.accent
     property bool hovered: false
     signal chosen()
     radius: height / 2
-    height: pill.value === "" ? Style.space(28) : (pill.hero ? Style.space(62) : Style.space(44))
+    // Uniform height now that the hero sizing is gone.
+    height: pill.value === "" ? Style.space(32) : Style.space(46)
     width: pill.value === ""
         ? Math.max(pillLabel.implicitWidth + Style.space(20), Style.space(40))
-        : Math.max(pill.hero ? Style.space(128) : Style.space(116),
-                   Math.min(pill.hero ? Style.space(190) : Style.space(170),
+        : Math.max(Style.space(116),
+                   Math.min(Style.space(170),
                             pillValue.implicitWidth + Style.space(24)))
+    // AppControl behaviour: a filled pill marks the selection, everything else is
+    // bare text with no fill and no border. Only hover earns a faint tint.
     color: pill.active
         ? pill.pillColor
-        : Qt.rgba(pill.pillColor.r, pill.pillColor.g, pill.pillColor.b,
-                 pill.hovered ? 0.22 : (pill.hero ? 0.18 : 0.12))
+        : (pill.hovered
+            ? Qt.rgba(pill.pillColor.r, pill.pillColor.g, pill.pillColor.b, 0.16)
+            : "transparent")
     borderSpec: pill.active
         ? Border.flat(pill.pillColor, 1)
-        : Border.flat(Qt.rgba(pill.pillColor.r, pill.pillColor.g, pill.pillColor.b,
-                             pill.hovered ? 0.55 : (pill.hero ? 0.6 : 0.35)),
-                      pill.hero ? 2 : 1)
+        : Border.none()
     Text {
       id: pillLabel
       visible: pill.value === ""
       anchors.centerIn: parent
       text: pill.label
-      color: pill.active ? root.onColor(pill.pillColor) : root.dim2
+      color: pill.active ? root.onColor(pill.pillColor) : (pill.hovered ? root.fg : root.dim1)
       font.family: root.contentFontFamily
-      font.pixelSize: Style.font.caption
+      font.pixelSize: Style.font.subtitle
     }
     Column {
       visible: pill.value !== ""
@@ -2772,7 +2802,7 @@ instances: Number(modelData.instances) || 1
       Text {
         anchors.horizontalCenter: parent.horizontalCenter
         text: pill.label
-        color: pill.active ? root.onColor(pill.pillColor) : root.dim2
+        color: pill.active ? root.onColor(pill.pillColor) : (pill.hovered ? root.fg : root.dim1)
         font.family: root.contentFontFamily
         font.pixelSize: Style.font.caption
       }
@@ -2782,9 +2812,10 @@ instances: Number(modelData.instances) || 1
         text: pill.value
         color: pill.active ? root.onColor(pill.pillColor) : root.fg
         font.family: root.contentFontFamily
-        // The selected metric's value renders at display size — the AppControl
-        // "hero number" effect — so the eye lands on the metric being charted.
-        font.pixelSize: pill.hero ? Style.font.display : Style.font.heading
+        // Uniform value size. The oversized "hero number" was retired in favour
+        // of AppControl's flat, even metric tabs; the live figure is still one
+        // hover away on the graph tooltip.
+        font.pixelSize: Style.font.subtitle
         font.bold: true
         elide: Text.ElideRight
         width: pill.width - Style.space(16)
@@ -3050,7 +3081,12 @@ instances: Number(modelData.instances) || 1
     readonly property bool hot: (app.cpu || 0) >= 80
     readonly property var appName: ar.app.name || "unknown"
     readonly property bool unsigned: !ar.app.verified
-    readonly property int rowH: Style.space(32)
+    readonly property int rowH: Style.space(40)
+    // AppControl's secondary line: the publisher (or failing that the app's own
+    // description) in muted grey, directly under the bold name. Both fields
+    // already arrive in the snapshot via buildInventory(); they were simply
+    // never rendered.
+    readonly property string arSub: ar.app.publisher || ar.app.desc || ""
     implicitHeight: rowH + (ar.actionsOpen ? Style.space(30) : 0)
     width: parent ? parent.width : 0
 
@@ -3059,22 +3095,49 @@ instances: Number(modelData.instances) || 1
       width: parent.width
       height: ar.rowH
       radius: Style.cornerRadius
+      // AppControl-style flat rows: at rest the row is invisible and separation
+      // comes from whitespace alone. Tint is reserved for states that carry
+      // meaning (hot/disabled) plus hover and the open action row.
       color: ar.hot ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, ar.hovered ? 0.14 : 0.08)
-           : (ar.app.disabled ? Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, ar.hovered ? 0.08 : 0.03)
-                              : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, ar.hovered ? 0.11 : 0.05))
+           : (ar.app.disabled ? (ar.hovered ? Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.10) : "transparent")
+                              : (ar.hovered || ar.actionsOpen
+                                  ? Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.11)
+                                  : "transparent"))
       borderSpec: ar.app.disabled
-          ? Border.flat(Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.22), 1)
+          ? Border.flat(Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, ar.hovered ? 0.22 : 0.12), 1)
           : (ar.actionsOpen
               ? Border.flat(Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35), 1)
               : (ar.hovered
                   ? Border.flat(Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.3), 1)
-                  : Border.flat(Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.12), 1)))
+                  : Border.none()))
       Behavior on color { ColorAnimation { duration: 60 } }
+
+      // Monogram avatar (AppControl's circular app icon). app_meta carries no icon
+      // path, so the circle shows the app's initial on a stable per-name colour
+      // derived from root.avatarColor(), which blends toward the theme accent.
+      Rectangle {
+        id: arAvatar
+        anchors.left: parent.left
+        anchors.leftMargin: Style.space(8)
+        anchors.verticalCenter: parent.verticalCenter
+        width: root.rowAvatarSize
+        height: width
+        radius: width / 2
+        color: root.avatarColor(ar.appName)
+        Text {
+          anchors.centerIn: parent
+          text: ar.appName.length > 0 ? ar.appName.charAt(0).toUpperCase() : "?"
+          color: root.onColor(root.avatarColor(ar.appName))
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+        }
+      }
 
       Rectangle {
         id: arRunDot
-        anchors.left: parent.left
-        anchors.leftMargin: Style.space(8)
+        anchors.left: arAvatar.right
+        anchors.leftMargin: Style.space(6)
         anchors.verticalCenter: parent.verticalCenter
         width: Style.space(8)
         height: Style.space(8)
@@ -3083,26 +3146,43 @@ instances: Number(modelData.instances) || 1
              : (ar.hot ? root.urgent : Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.8))
       }
 
-      Text {
-        id: arName
+      // Two-tone hierarchy, AppControl-style: bold full-contrast name over a
+      // muted secondary line. When there is no publisher/description the block
+      // collapses to a single vertically-centred line.
+      Column {
         anchors.left: arRunDot.right
         anchors.leftMargin: Style.space(8)
         anchors.verticalCenter: parent.verticalCenter
-        width: Style.space(240)
-        elide: Text.ElideRight
-        text: (ar.hot ? "\uf071  " : "") + ar.appName
-        // Name stays in the normal foreground; the run dot + CPU pill carry the
-        // load signal so a verified app never reads red.
-        color: root.fg
-        font.family: root.contentFontFamily
-        font.pixelSize: Style.font.caption
-        font.bold: true
+        width: root.rowNameWidth
+        spacing: 1
+
+        Text {
+          id: arName
+          width: parent.width
+          elide: Text.ElideRight
+          text: (ar.hot ? "\uf071  " : "") + ar.appName
+          // Name stays in the normal foreground; the run dot + CPU pill carry the
+          // load signal so a verified app never reads red.
+          color: root.fg
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.subtitle
+          font.bold: true
+        }
+        Text {
+          visible: ar.arSub !== ""
+          width: parent.width
+          elide: Text.ElideRight
+          text: ar.arSub
+          color: root.muted
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+        }
       }
 
       Row {
         id: arTags
-        anchors.left: arName.right
-        anchors.leftMargin: Style.space(8)
+        anchors.left: parent.left
+        anchors.leftMargin: root.rowTrustX
         anchors.verticalCenter: parent.verticalCenter
         spacing: Style.space(4)
         Rectangle {
@@ -3328,7 +3408,7 @@ instances: Number(modelData.instances) || 1
     property var alert: ({})
     property bool hovered: false
     signal dismissed()
-    implicitHeight: Style.space(30)
+    implicitHeight: Style.space(36)
     width: parent ? parent.width : 0
     readonly property color dot: alr.alert.severity === "critical" ? root.urgent
                 : (alr.alert.severity === "warning" ? root.accent : root.dim1)
@@ -3336,10 +3416,14 @@ instances: Number(modelData.instances) || 1
     BorderSurface {
       anchors.fill: parent
       radius: Style.cornerRadius
+      // Flat at rest; the severity dot is the colour carrier and the fill is
+      // reserved for critical alerts and hover.
       color: alr.dot === root.urgent
           ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, alr.hovered ? 0.13 : 0.07)
-          : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, alr.hovered ? 0.11 : 0.05)
-      borderSpec: Border.flat(Qt.rgba(alr.dot.r, alr.dot.g, alr.dot.b, alr.hovered ? 0.3 : 0), 1)
+          : (alr.hovered ? Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.11) : "transparent")
+      borderSpec: alr.hovered
+          ? Border.flat(Qt.rgba(alr.dot.r, alr.dot.g, alr.dot.b, 0.3), 1)
+          : Border.none()
       Behavior on color { ColorAnimation { duration: 60 } }
     }
     MouseArea {
@@ -3441,16 +3525,20 @@ instances: Number(modelData.instances) || 1
     readonly property string icon: root.eventIcon(event.kind || "")
     property bool actionOpen: false
     property bool hovered: false
-    implicitHeight: (evr.actionOpen ? Style.space(54) : Style.space(30))
+    implicitHeight: (evr.actionOpen ? Style.space(60) : Style.space(36))
     width: parent ? parent.width : 0
 
     BorderSurface {
       anchors.fill: parent
       radius: Style.cornerRadius
+      // Flat at rest like AppControl, but an UNREAD event keeps its accent fill —
+      // that is a real state ("you haven't seen this yet"), not decoration.
       color: evr.unread
           ? (evr.hovered ? root.mixColor(root.accentSoft, root.accent, 0.12) : root.accentSoft)
-          : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, evr.hovered ? 0.11 : 0.05)
-      borderSpec: Border.flat(Qt.rgba(evr.typed.r, evr.typed.g, evr.typed.b, evr.hovered ? 0.32 : 0), 1)
+          : (evr.hovered ? Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.11) : "transparent")
+      borderSpec: evr.unread || evr.hovered
+          ? Border.flat(Qt.rgba(evr.typed.r, evr.typed.g, evr.typed.b, evr.hovered ? 0.32 : 0.18), 1)
+          : Border.none()
       Behavior on color { ColorAnimation { duration: 60 } }
     }
     MouseArea {
@@ -3554,7 +3642,7 @@ instances: Number(modelData.instances) || 1
       z: 4
       visible: evr.actionOpen
       anchors.top: parent.top
-      anchors.topMargin: Style.space(30)
+      anchors.topMargin: Style.space(36)
       anchors.left: parent.left
       anchors.leftMargin: Style.space(112)
       spacing: Style.space(6)
@@ -4472,7 +4560,7 @@ instances: Number(modelData.instances) || 1
       text: ch.leftLabel
       color: root.dim2
       font.family: root.contentFontFamily
-      font.pixelSize: Style.font.caption
+      font.pixelSize: Style.font.subtitle
       font.bold: true
     }
     Text {
@@ -4483,7 +4571,7 @@ instances: Number(modelData.instances) || 1
       text: ch.midLabel
       color: root.dim2
       font.family: root.contentFontFamily
-      font.pixelSize: Style.font.caption
+      font.pixelSize: Style.font.subtitle
       font.bold: true
     }
     // Right columns are generated from the shared `root.procColumns` model, so
@@ -4499,7 +4587,7 @@ instances: Number(modelData.instances) || 1
         text: modelData.label
         color: root.dim2
         font.family: root.contentFontFamily
-        font.pixelSize: Style.font.caption
+        font.pixelSize: Style.font.subtitle
         font.bold: true
       }
     }
@@ -4508,11 +4596,13 @@ instances: Number(modelData.instances) || 1
   component ProcRow: Item {
     id: pr
     property string name: ""
+    property string publisher: ""
+    property string desc: ""
     property int pid: 0
     property real cpu: 0
     property real mem: 0
     property real io: 0
-property real gpu: 0
+    property real gpu: 0
     property real net: -1
     property bool verified: false
     property var perms: []
@@ -4521,25 +4611,31 @@ property real gpu: 0
     property var sparks: []
     property bool critical: cpu > 80
     property bool hovered: false
+    // AppControl's secondary line, fed from the same snapshot fields the apps
+    // inventory already exposes.
+    readonly property string prSub: pr.publisher || pr.desc || ""
     signal details()
     signal kill(string name)
     signal disable(string name)
     signal enable(string name)
-    implicitHeight: Style.space(26)
+    implicitHeight: Style.space(34)
     width: parent ? parent.width : 0
 
     BorderSurface {
       anchors.fill: parent
       radius: Style.cornerRadius
+      // Flat at rest (AppControl separates rows with whitespace, not borders);
+      // the tint is reserved for the meaningful "running hot" state and hover.
       color: pr.critical
           ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, pr.hovered ? 0.16 : 0.10)
-          : Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, pr.hovered ? 0.12 : 0.05)
+          : (pr.hovered ? Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.11) : "transparent")
       borderSpec: pr.critical
           ? Border.flat(Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.35), 1)
           : (pr.hovered
-              ? Border.flat(Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.28), 1)
-              : Border.flat(Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b,
-                                   pr.disabled ? 0.18 : 0), pr.disabled ? 1 : 0))
+              ? Border.flat(Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.3), 1)
+              : (pr.disabled
+                  ? Border.flat(Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.18), 1)
+                  : Border.none()))
       Behavior on color { ColorAnimation { duration: 60 } }
     }
     MouseArea {
@@ -4550,26 +4646,64 @@ property real gpu: 0
       onExited: pr.hovered = false
       onClicked: pr.details()
     }
-    Text {
-      id: prName
-      anchors.left: parent.left
-      anchors.leftMargin: Style.space(10)
-      anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(160)
-      elide: Text.ElideRight
-      text: pr.critical ? "\uf071  " + pr.name : pr.name
-      // Load is signalled by the row tint and the CPU pill, not the name, so a
-      // verified process never reads as "red/untrusted" just for running hot.
-      color: root.fg
-      font.family: root.contentFontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: pr.critical
-    }
-    Row {
-      anchors.left: prName.right
-      anchors.leftMargin: Style.space(8)
-      anchors.verticalCenter: parent.verticalCenter
-      spacing: Style.space(4)
+    // Monogram avatar, matching AppRow, so the process list and the app list read
+      // as the same family of rows.
+      Rectangle {
+        id: prAvatar
+        anchors.left: parent.left
+        anchors.leftMargin: Style.space(8)
+        anchors.verticalCenter: parent.verticalCenter
+        width: root.rowAvatarSize
+        height: width
+        radius: width / 2
+        color: pr.verified ? root.ok : root.avatarColor(pr.name)
+        Text {
+          anchors.centerIn: parent
+          text: pr.name.length > 0 ? pr.name.charAt(0).toUpperCase() : "?"
+          color: root.onColor(pr.verified ? root.ok : root.avatarColor(pr.name))
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+        }
+      }
+
+      // Two-tone hierarchy, AppControl-style: bold name with a muted secondary
+      // line beneath it. The whole block keeps a fixed width so the trust chips
+      // that follow stay aligned down the column.
+      Column {
+        anchors.left: parent.left
+        anchors.leftMargin: root.rowLead
+        anchors.verticalCenter: parent.verticalCenter
+        width: root.procNameWidth
+        spacing: 1
+
+        Text {
+          id: prName
+          width: parent.width
+          elide: Text.ElideRight
+          text: pr.critical ? "\uf071  " + pr.name : pr.name
+          // Load is signalled by the row tint and the CPU pill, not the name, so
+          // a verified process never reads as "red/untrusted" just for running hot.
+          color: root.fg
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.subtitle
+          font.bold: pr.critical
+        }
+        Text {
+          visible: pr.prSub !== ""
+          width: parent.width
+          elide: Text.ElideRight
+          text: pr.prSub
+          color: root.muted
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
+      Row {
+        anchors.left: parent.left
+        anchors.leftMargin: root.procTrustX
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(4)
       Rectangle {
         visible: pr.disabled
         width: prDisTxt.implicitWidth + Style.space(10)
@@ -4758,7 +4892,27 @@ property real gpu: 0
         if (j === 0) ctx.moveTo(x, y)
         else ctx.lineTo(x, y)
       }
-      ctx.strokeStyle = Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.8)
+      // Close the path down to the baseline and fill it with an accent gradient,
+      // giving the AppControl-style filled mini-chart, then re-stroke the crisp
+      // line on top (the fill pass must not become the outline).
+      ctx.lineTo(w, h)
+      ctx.lineTo(0, h)
+      ctx.closePath()
+      var grad = ctx.createLinearGradient(0, 0, 0, h)
+      grad.addColorStop(0, Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.28))
+      grad.addColorStop(1, Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.0))
+      ctx.fillStyle = grad
+      ctx.fill()
+      // Re-trace just the line (no baseline) for a clean 1px stroke.
+      ctx.beginPath()
+      for (var k = 0; k < data.length; k++) {
+        var lx = k * w / Math.max(1, data.length - 1)
+        var lv = data[k] < 0 ? 0 : data[k] / maxV
+        var ly = h - lv * (h - 2) - 1
+        if (k === 0) ctx.moveTo(lx, ly)
+        else ctx.lineTo(lx, ly)
+      }
+      ctx.strokeStyle = Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.85)
       ctx.lineWidth = 1
       ctx.stroke()
     }
@@ -5100,60 +5254,115 @@ property real gpu: 0
 
     // Hover tooltip. Themed via Color.tooltip.* + a BorderSurface border spec
     // so it matches the running theme (it used to be a hardcoded dark card).
+    // Layout follows AppControl: a header row (timestamp left, value right) then
+    // a ranked list of the top processes with a dot avatar + name on the left and
+    // a bold right-aligned figure, then a muted "N others" overflow line.
     BorderSurface {
       id: tip
       z: 50
       visible: false
-      width: Style.space(220)
+      width: Style.space(250)
       implicitHeight: tipCol.implicitHeight + Style.space(16)
       radius: Style.cornerRadius
       color: Color.tooltip.background
       borderSpec: root.tipBorderSpec
+      property var tipRows: []
+      property int tipTotal: 0
       Column {
         id: tipCol
         anchors.fill: parent
-        anchors.margins: Style.space(8)
-        spacing: Style.space(2)
-        Row {
-          spacing: Style.space(8)
+        anchors.margins: Style.space(10)
+        spacing: Style.space(4)
+        // Header: timestamp left, bold value right.
+        Item {
+          width: tip.width - Style.space(20)
+          height: Math.max(tipTime.implicitHeight, tipValue.implicitHeight)
           Text {
             id: tipTime
-            color: Color.tooltip.text
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            color: Qt.rgba(Color.tooltip.text.r, Color.tooltip.text.g, Color.tooltip.text.b, 0.75)
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
-            font.bold: true
           }
           Text {
             id: tipValue
-            color: Qt.rgba(Color.tooltip.text.r, Color.tooltip.text.g, Color.tooltip.text.b, 0.8)
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            color: Color.tooltip.text
             font.family: root.contentFontFamily
-            font.pixelSize: Style.font.caption
+            font.pixelSize: Style.font.subtitle
+            font.bold: true
+          }
+        }
+        // Ranked list of top processes at this moment.
+        Repeater {
+          model: tip.tipRows
+          delegate: Item {
+            required property var modelData
+            width: tip.width - Style.space(20)
+            height: Style.space(20)
+            Rectangle {
+              id: tipDot
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: Style.space(14)
+              height: width
+              radius: width / 2
+              color: root.avatarColor(modelData.name)
+              Text {
+                anchors.centerIn: parent
+                text: modelData.name.length > 0 ? modelData.name.charAt(0).toUpperCase() : "?"
+                color: root.onColor(root.avatarColor(modelData.name))
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+            }
+            Text {
+              anchors.left: tipDot.right
+              anchors.leftMargin: Style.space(6)
+              anchors.right: tipPct.left
+              anchors.rightMargin: Style.space(8)
+              anchors.verticalCenter: parent.verticalCenter
+              text: modelData.name
+              color: Color.tooltip.text
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
+            Text {
+              id: tipPct
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: modelData.pctText
+              color: Color.tooltip.text
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
           }
         }
         Text {
-          id: tipTop
-          width: tip.width - Style.space(16)
-          color: Qt.rgba(Color.tooltip.text.r, Color.tooltip.text.g, Color.tooltip.text.b, 0.7)
+          id: tipMore
+          visible: tip.tipTotal > tip.tipRows.length
+          width: tip.width - Style.space(20)
+          text: tip.tipTotal > tip.tipRows.length
+              ? "Click the graph to see " + (tip.tipTotal - tip.tipRows.length) + " others"
+              : ""
+          color: Qt.rgba(Color.tooltip.text.r, Color.tooltip.text.g, Color.tooltip.text.b, 0.6)
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
         Text {
           id: tipEvents
-          width: tip.width - Style.space(16)
+          width: tip.width - Style.space(20)
           color: root.info
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
           visible: false
-        }
-        Text {
-          id: tipMore
-          text: "  click for all processes"
-          color: hg.lineColor
-          font.family: root.contentFontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
         }
       }
       function showAt(ts, x, y) {
@@ -5163,10 +5372,11 @@ property real gpu: 0
         }
         if (!near && hg.pts.length) near = hg.pts[hg.pts.length - 1]
         if (!near) return
-        tipTime.text = root.fmtTime(near.ts)
+        tipTime.text = Qt.formatDateTime(new Date(near.ts * 1000), "HH:mm:ss") + ", " + Qt.formatDate(new Date(near.ts * 1000), "d MMM")
         tipValue.text = (root.selMetric === "disk" || root.selMetric === "net") ? Model.fmtRate(near.v)
                         : Math.round(near.v) + hg.unit
         var top = []
+        var total = 0
         var sel = root.nearestSnap(near.ts)
         if (sel && sel.procs) {
           var arr = sel.procs.slice()
@@ -5185,15 +5395,20 @@ property real gpu: 0
             }
             return b.cpu - a.cpu
           })
-          top = [arr[0], arr[1], arr[2]]
+          total = arr.length
+          // Build the ranked rows (name + preformatted figure) for the Repeater.
+          var rows = []
+          for (var k = 0; k < arr.length && k < 4; k++) {
+            var p = arr[k]
+            rows.push({ name: p.name,
+                        pctText: tipNet ? Math.round((p.nr || 0) + (p.nt || 0)) + " KB/s"
+                                        : tipIo ? Math.round(p.io_kbs || 0) + " KB/s"
+                                                 : Math.round(p.cpu) + "%" })
+          }
+          top = rows
         }
-        tipTop.text = ""
-        for (var k = 0; k < top.length && top[k]; k++) {
-          tipTop.text += (k > 0 ? " · " : "") + top[k].name + " "
-              + (tipNet ? Math.round((top[k].nr || 0) + (top[k].nt || 0)) + " KB/s"
-                        : tipIo ? Math.round(top[k].io_kbs || 0) + " KB/s"
-                                 : Math.round(top[k].cpu) + "%")
-        }
+        tip.tipRows = top
+        tip.tipTotal = total
         // Pinned events near this moment (the 3 closest within ±5 min).
         var pins = []
         for (var pi = 0; pi < hg.events.length; pi++) {
@@ -5213,7 +5428,7 @@ property real gpu: 0
         tipEvents.visible = ptxt.length > 0
         tip.visible = true
         tip.parent = hg
-        tip.width = Style.space(220)
+        tip.width = Style.space(250)
         var px = x - tip.width / 2
         if (px < 4) px = 4
         if (px > hg.width - tip.width - 4) px = hg.width - tip.width - 4
