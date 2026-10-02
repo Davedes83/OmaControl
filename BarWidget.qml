@@ -197,6 +197,12 @@ BarWidget {
     function openApp(): void {
       if (appLoader.item) appLoader.item.open = true
     }
+    // Open the app-details panel for a named app. Lets the panel be opened
+    // from a keybinding or script without clicking a row.
+    function showDetails(name: string): bool {
+      if (!appLoader.item || !name) return false
+      return appLoader.item.showDetails(String(name))
+    }
     function closeApp(): void {
       if (appLoader.item) appLoader.item.open = false
     }

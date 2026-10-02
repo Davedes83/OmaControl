@@ -779,6 +779,24 @@ PanelWindow {
     statsProc.running = true
   }
 
+  // Open the details panel for a named app by looking it up in the same
+  // inventory the Apps list is built from. Setting detailApp triggers
+  // onDetailAppChanged, which kicks off the stats/net/process loads — so this
+  // is exactly the same path a row click takes. Reachable over IPC so the
+  // panel can be opened from a keybinding or script.
+  function showDetails(name) {
+    if (!name) return false
+    var list = root.filteredApps || []
+    for (var i = 0; i < list.length; i++) {
+      if ((list[i].name || "") === name) {
+        root.open = true
+        root.detailApp = list[i]
+        return true
+      }
+    }
+    return false
+  }
+
   function loadEventContext(ev) {
     root.eventCtx = null
     root.eventCtxBusy = true
@@ -2737,13 +2755,17 @@ PanelWindow {
     netInfo: root.detailNet
     netBusy: root.detailNetBusy
     z: 60
+    // Content-sized rather than stretched top-to-bottom: anchoring both edges
+    // left a large dead gap above the buttons whenever the content was shorter
+    // than the card (which is most of the time). Now the panel grows to fit its
+    // content and is capped by maxPanelHeight; it only scrolls when it hits
+    // that cap.
     anchors.top: card.top
     anchors.topMargin: (root.compact ? Style.space(48) : Style.space(64)) + Style.space(16)
-    anchors.bottom: card.bottom
-    anchors.bottomMargin: root.compact ? 0 : Style.space(84)
     anchors.left: card.left
     anchors.leftMargin: Style.space(16)
     width: Style.space(430)
+    maxPanelHeight: card.height - Style.space(64) - Style.space(84) - Style.space(32)
     onClose: root.detailApp = null
     onKill: function(name) { root.appAction("kill", name); root.detailApp = null }
     onDisable: function(name) { root.confirmedDisable(name) }
@@ -4037,12 +4059,29 @@ PanelWindow {
     property bool netBusy: false
     property bool procOpen: false
     property bool procShowAll: false
+    // The "How to read the values" glossary is reference material, not the
+    // reason the user opened the panel, so it starts collapsed.
+    property bool legendOpen: false
+    // Upper bound supplied by the caller (the space between the card's top bar
+    // and the bottom nav). The panel grows to fit its content up to this cap
+    // and scrolls beyond it, so there is never a dead gap above the buttons.
+    property real maxPanelHeight: 0
     signal close()
     signal kill(string name)
     signal disable(string name)
     signal enable(string name)
     width: parent ? parent.width : 0
     implicitHeight: Style.space(300)
+    // Header (avatar + name + badges) + description, then the scroll body at its
+    // natural height (capped), then the action-chip row and its margins.
+    readonly property real bodyH: dpScroll.contentHeight
+    height: {
+      var head = dpDesc.y + dpDesc.height + Style.space(14)
+      var body = dpScroll.contentHeight
+      var chips = Style.space(44)
+      var want = head + body + chips
+      return maxPanelHeight > 0 ? Math.min(want, maxPanelHeight) : want
+    }
 
     function binaryPath() {
       if (!dp.app) return ""
@@ -4114,101 +4153,128 @@ PanelWindow {
       border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.45)
     }
 
-    Row {
-      anchors.top: parent.top
-      anchors.topMargin: Style.space(10)
-      anchors.left: parent.left
-      anchors.leftMargin: Style.space(12)
-      anchors.right: parent.right
-      anchors.rightMargin: Style.space(16)
-      spacing: Style.space(8)
-      Text {
-        text: (dp.app && dp.app.name) || ""
-        color: root.fg
-        font.family: root.contentFontFamily
-        font.pixelSize: Style.font.body
-        font.bold: true
-        elide: Text.ElideRight
-        width: Math.min(parent.width * 0.42, Style.space(180))
-      }
-      Rectangle {
-        visible: dp.app && !dp.app.verified
-        width: Style.space(62); height: Style.space(16); radius: Style.space(8)
-        color: root.warnSoft
-        border.width: 1
-        border.color: Qt.rgba(root.warn.r, root.warn.g, root.warn.b, 0.45)
-        Text { anchors.centerIn: parent; text: "Unsigned"; color: root.warn; font.family: root.contentFontFamily; font.pixelSize: Style.font.caption }
-      }
-      Rectangle {
-        visible: dp.app && dp.app.verified
-        width: Style.space(70); height: Style.space(16); radius: Style.space(8)
-        color: root.ok
-        border.width: 0
-        Text { anchors.centerIn: parent; text: "Verified"; color: root.onColor(root.ok); font.family: root.contentFontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-      }
-      Rectangle {
-        visible: !!(dp.app && dp.app.perms && dp.app.perms.length > 0)
-        width: Math.min(Style.space(110), Style.space(14) + dpPermText.implicitWidth)
-        height: Style.space(16); radius: Style.space(8)
-        color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.10)
-        border.width: 1
-        border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.4)
+    // Header: monogram avatar + prominent name + trust badge, matching the
+      // row treatment so the panel reads as the same family.
+      Row {
+        id: dpHead
+        anchors.top: parent.top
+        anchors.topMargin: Style.space(14)
+        anchors.left: parent.left
+        anchors.leftMargin: Style.space(14)
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(16)
+        spacing: Style.space(10)
+        Rectangle {
+          anchors.verticalCenter: parent.verticalCenter
+          width: Style.space(34)
+          height: width
+          radius: width / 2
+          color: dp.app && dp.app.verified ? root.ok
+                                         : root.avatarColor((dp.app && dp.app.name) || "")
+          Text {
+            anchors.centerIn: parent
+            text: (dp.app && dp.app.name ? dp.app.name.charAt(0).toUpperCase() : "?")
+            color: root.onColor(dp.app && dp.app.verified ? root.ok
+                                                          : root.avatarColor((dp.app && dp.app.name) || ""))
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.subtitle
+            font.bold: true
+          }
+        }
         Text {
-          id: dpPermText
-          anchors.centerIn: parent
-          text: "perm: " + ((dp.app && dp.app.perms ? dp.app.perms : []).join(", "))
-          color: root.urgent
+          anchors.verticalCenter: parent.verticalCenter
+          text: (dp.app && dp.app.name) || ""
+          color: root.fg
           font.family: root.contentFontFamily
-          font.pixelSize: Style.font.caption
+          font.pixelSize: Style.font.heading
+          font.bold: true
           elide: Text.ElideRight
+          width: Math.min(implicitWidth, dpHead.width - Style.space(160))
+        }
+        Rectangle {
+          anchors.verticalCenter: parent.verticalCenter
+          visible: dp.app && !dp.app.verified
+          width: Style.space(62); height: Style.space(18); radius: height / 2
+          color: root.warnSoft
+          border.width: 1
+          border.color: Qt.rgba(root.warn.r, root.warn.g, root.warn.b, 0.45)
+          Text { anchors.centerIn: parent; text: "Unsigned"; color: root.warn; font.family: root.contentFontFamily; font.pixelSize: Style.font.caption }
+        }
+        Rectangle {
+          anchors.verticalCenter: parent.verticalCenter
+          visible: dp.app && dp.app.verified
+          width: Style.space(72); height: Style.space(18); radius: height / 2
+          color: root.ok
+          border.width: 0
+          Text { anchors.centerIn: parent; text: "Verified"; color: root.onColor(root.ok); font.family: root.contentFontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+        }
+        Rectangle {
+          anchors.verticalCenter: parent.verticalCenter
+          visible: !!(dp.app && dp.app.perms && dp.app.perms.length > 0)
+          width: Math.min(Style.space(120), Style.space(14) + dpPermText.implicitWidth)
+          height: Style.space(18); radius: height / 2
+          color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.10)
+          border.width: 1
+          border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.4)
+          Text {
+            id: dpPermText
+            anchors.centerIn: parent
+            text: (dp.app && dp.app.perms ? dp.app.perms : []).join(", ")
+            color: root.urgent
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
         }
       }
-    }
 
     Text {
-      anchors.top: parent.top
-      anchors.topMargin: Style.space(38)
+      id: dpMeta
+      anchors.top: dpHead.bottom
+      anchors.topMargin: Style.space(8)
       anchors.left: parent.left
-      anchors.leftMargin: Style.space(12)
+      anchors.leftMargin: Style.space(14)
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(12)
+      anchors.rightMargin: Style.space(14)
       text: (dp.app && dp.app.source || "unknown")
           + "   ·   disabled: " + (dp.app && dp.app.disabled ? "yes" : "no")
           + "   ·   instances: " + (dp.app ? (dp.app.instances !== undefined ? dp.app.instances : (dp.app.pids ? dp.app.pids.length : 0)) : 0)
-      color: root.dim1
+      color: root.dim2
       font.family: root.contentFontFamily
       font.pixelSize: Style.font.caption
       elide: Text.ElideRight
     }
     Text {
       id: dpDesc
-      anchors.top: parent.top
-      anchors.topMargin: Style.space(58)
+      anchors.top: dpMeta.bottom
+      anchors.topMargin: Style.space(6)
       anchors.left: parent.left
-      anchors.leftMargin: Style.space(12)
+      anchors.leftMargin: Style.space(14)
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(12)
+      anchors.rightMargin: Style.space(14)
       text: (dp.app && dp.app.desc && dp.app.desc.trim() !== "")
         ? dp.app.desc
         : ((dp.app && dp.app.exe) ? ("Binary: " + dp.app.exe + " — no description available.")
                                   : "No description available for this binary.")
       color: root.dim1
       font.family: root.contentFontFamily
-      font.pixelSize: Style.font.caption
+      font.pixelSize: Style.font.body
       wrapMode: Text.WordWrap
-      maximumLineCount: 2
+      maximumLineCount: 3
       elide: Text.ElideRight
     }
     Flickable {
       id: dpScroll
       anchors.top: dpDesc.bottom
-      anchors.topMargin: Style.space(10)
+      anchors.topMargin: Style.space(14)
       anchors.left: parent.left
-      anchors.leftMargin: Style.space(12)
+      anchors.leftMargin: Style.space(14)
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(12)
-      anchors.bottom: dpChips.top
-      anchors.bottomMargin: Style.space(8)
+      anchors.rightMargin: Style.space(14)
+      // Sized to its content (bounded by the space left after the header and
+      // the action chips) so the panel can hug its content; overflow scrolls.
+      height: Math.max(0, Math.min(dpScroll.contentHeight,
+                                   dp.height - (dpDesc.y + dpDesc.height + Style.space(14)) - Style.space(46)))
       clip: true
       contentWidth: width
       contentHeight: dpInfo.implicitHeight
@@ -4217,7 +4283,7 @@ PanelWindow {
       Column {
         id: dpInfo
         width: dpScroll.width
-        spacing: Style.space(8)
+        spacing: Style.space(12)
 
       Text {
         width: parent.width
@@ -4229,43 +4295,39 @@ PanelWindow {
         elide: Text.ElideRight
       }
 
+      // Flat stat tiles, AppControl-style: no border, no fill at rest — a quiet
+      // uppercase label over a large figure, separated by whitespace alone.
       Flow {
         id: dpStatsFlow
         width: parent.width
-        spacing: Style.space(6)
+        spacing: Style.space(10)
         Repeater {
           model: dp.statEntries()
-          delegate: Rectangle {
-            width: (dpStatsFlow.width - Style.space(6)) / 2
-            height: Style.space(32)
-            radius: Style.space(12)
-            color: Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.10)
-            border.width: 1
-            border.color: Qt.rgba(root.dim1.r, root.dim1.g, root.dim1.b, 0.15)
+          delegate: Item {
+            width: (dpStatsFlow.width - Style.space(10)) / 2
+            height: Style.space(38)
             Text {
+              id: dpStatKey
               anchors.top: parent.top
-              anchors.topMargin: Style.space(4)
               anchors.left: parent.left
-              anchors.leftMargin: Style.space(8)
               anchors.right: parent.right
-              anchors.rightMargin: Style.space(8)
               text: modelData.k
               color: root.dim2
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
+              font.letterSpacing: 1
+              font.bold: true
               elide: Text.ElideRight
             }
             Text {
-              anchors.top: parent.top
-              anchors.topMargin: Style.space(15)
+              anchors.top: dpStatKey.bottom
+              anchors.topMargin: Style.space(2)
               anchors.left: parent.left
-              anchors.leftMargin: Style.space(8)
               anchors.right: parent.right
-              anchors.rightMargin: Style.space(8)
               text: modelData.v
               color: root.fg
               font.family: root.contentFontFamily
-              font.pixelSize: Style.font.caption
+              font.pixelSize: Style.font.heading
               font.bold: true
               elide: Text.ElideRight
             }
@@ -4309,9 +4371,8 @@ PanelWindow {
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
             preventStealing: true
-            onPressed: console.log("PROC HEADER PRESS")
+            onPressed: {}
             onClicked: {
-              console.log("PROC HEADER CLICK pre=" + dp.procOpen + " n=" + root.procDetail.length)
               dp.procOpen = !dp.procOpen
               if (!dp.procOpen) dp.procShowAll = false
               dpScroll.contentY = Math.max(0, procHeader.mapToItem(dpInfo, 0, 0).y - Style.space(4))
@@ -4463,16 +4524,51 @@ PanelWindow {
         }
       }
 
-      Text {
+      // Collapsible glossary. Reference material, so it stays out of the way
+      // until asked for — it used to occupy roughly half the panel.
+      Rectangle {
         width: parent.width
-        text: "How to read the values"
-        color: root.dim1
-        font.family: root.contentFontFamily
-        font.pixelSize: Style.font.caption
-        font.bold: true
+        height: Style.space(24)
+        radius: Style.space(12)
+        visible: dp.statLegend().length > 0
+        color: legendHover.containsMouse
+               ? Qt.rgba(root.dim2.r, root.dim2.g, root.dim2.b, 0.14)
+               : "transparent"
+        Behavior on color { ColorAnimation { duration: 60 } }
+        MouseArea {
+          id: legendHover
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          preventStealing: true
+          onClicked: {
+            dp.legendOpen = !dp.legendOpen
+            if (!dp.legendOpen) dpScroll.contentY = Math.max(0, legendToggle.mapToItem(dpInfo, 0, 0).y - Style.space(4))
+          }
+        }
+        Row {
+          id: legendToggle
+          anchors.left: parent.left
+          anchors.leftMargin: Style.space(8)
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(6)
+          Text {
+            text: dp.legendOpen ? "\uf078  " : "\uf054  "
+            color: root.dim2
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+          }
+          Text {
+            text: "How to read the values"
+            color: root.dim1
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+        }
       }
       Repeater {
-        model: dp.statLegend()
+        model: dp.legendOpen ? dp.statLegend() : []
         delegate: Row {
           width: parent.width
           spacing: Style.space(6)
