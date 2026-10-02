@@ -1404,7 +1404,11 @@ PanelWindow {
     id: card
     z: 1
     width: Math.min(root.compact ? Style.space(900) : Style.space(1100), root.width - Style.space(40))
-    height: Math.min(root.compact ? Style.space(170) : Style.space(880), root.height - Style.space(40))
+    // Compact grew from 170 to 224 to make room for the bottom nav rail. At 170
+    // the header (48) + separator (1) + nav (46) left the chart ~43px once the
+    // Activity page's 16px margins were applied, which crushed the plot and its
+    // x-axis labels. 224 keeps a usable chart height with the tabs present.
+    height: Math.min(root.compact ? Style.space(224) : Style.space(880), root.height - Style.space(40))
     anchors.centerIn: parent
     radius: Style.cornerRadius
     color: root.surface
@@ -1485,7 +1489,9 @@ PanelWindow {
         Item {
           visible: root.activeTab === 0
           anchors.fill: parent
-          anchors.margins: Style.space(16)
+          // Tighter margins in compact: the card is only 224px tall and the
+          // 16px inset costs the chart a third of its remaining height.
+          anchors.margins: Style.space(root.compact ? 8 : 16)
 
           Row {
             id: metricRow
@@ -2851,7 +2857,12 @@ PanelWindow {
       // ==================== Bottom nav
       Item {
         Layout.fillWidth: true
-        Layout.preferredHeight: root.compact ? 0 : Style.space(84)
+        // Compact previously forced this to 0, which collapsed the row but left
+        // its children laid out — so the tabs overflowed and drew straight on
+        // top of the chart (visible in the compact screenshot as icons sitting
+        // over the x-axis labels). Give the row a real compact height so the
+        // rail occupies its own band at the bottom of the card.
+        Layout.preferredHeight: root.compact ? Style.space(46) : Style.space(84)
         Rectangle {
           anchors.fill: parent
           color: "transparent"
@@ -2861,12 +2872,12 @@ PanelWindow {
         // ~40px pill and made the rail read as scattered dots.
         Row {
           anchors.centerIn: parent
-          spacing: Style.space(6)
-          NavTab { width: Style.space(112); height: Style.space(60); iconText: "\uf201"; label: "Activity"; active: root.activeTab === 0; onChosen: root.activeTab = 0 }
-          NavTab { width: Style.space(112); height: Style.space(60); iconText: "\uf00a"; label: "Apps"; active: root.activeTab === 1; onChosen: root.activeTab = 1 }
-          NavTab { width: Style.space(112); height: Style.space(60); iconText: "\uf0f3"; label: "Alerts"; badge: root.alertBadge > 0 ? root.alertBadge : -1; active: root.activeTab === 2; onChosen: root.activeTab = 2 }
-          NavTab { width: Style.space(112); height: Style.space(60); iconText: "\uf017"; label: "Events"; badge: root.eventBadge > 0 ? root.eventBadge : -1; active: root.activeTab === 3; onChosen: root.activeTab = 3 }
-          NavTab { width: Style.space(112); height: Style.space(60); iconText: "\uf013"; label: "Settings"; active: root.activeTab === 4; onChosen: root.activeTab = 4 }
+          spacing: Style.space(root.compact ? 10 : 6)
+          NavTab { width: Style.space(root.compact ? 44 : 112); height: Style.space(root.compact ? 40 : 60); iconOnly: root.compact; iconText: "\uf201"; label: "Activity"; active: root.activeTab === 0; onChosen: root.activeTab = 0 }
+          NavTab { width: Style.space(root.compact ? 44 : 112); height: Style.space(root.compact ? 40 : 60); iconOnly: root.compact; iconText: "\uf00a"; label: "Apps"; active: root.activeTab === 1; onChosen: root.activeTab = 1 }
+          NavTab { width: Style.space(root.compact ? 44 : 112); height: Style.space(root.compact ? 40 : 60); iconOnly: root.compact; iconText: "\uf0f3"; label: "Alerts"; badge: root.alertBadge > 0 ? root.alertBadge : -1; active: root.activeTab === 2; onChosen: root.activeTab = 2 }
+          NavTab { width: Style.space(root.compact ? 44 : 112); height: Style.space(root.compact ? 40 : 60); iconOnly: root.compact; iconText: "\uf017"; label: "Events"; badge: root.eventBadge > 0 ? root.eventBadge : -1; active: root.activeTab === 3; onChosen: root.activeTab = 3 }
+          NavTab { width: Style.space(root.compact ? 44 : 112); height: Style.space(root.compact ? 40 : 60); iconOnly: root.compact; iconText: "\uf013"; label: "Settings"; active: root.activeTab === 4; onChosen: root.activeTab = 4 }
         }
       }
     }
@@ -3135,14 +3146,19 @@ PanelWindow {
     property string label: ""
     property int badge: -1
     property bool active: false
+    // Compact mode drops the text label and renders a square icon-only target,
+    // because five 112px labelled tabs are ~590px wide and ~52px tall, which
+    // cannot fit inside the 170px-tall compact card without pushing the chart
+    // out. Icon-only keeps the rail to ~40px so it sits under the chart.
+    property bool iconOnly: false
     signal chosen()
     color: "transparent"
     property bool hovered: false
     // Every tab is the same size and every pill is the same size, so the rail
     // reads as one uniform unit. Previously the pill hugged the label, so
     // "Activity" got a wide pill and "Apps" a narrow one.
-    readonly property real pillW: Style.space(112)
-    readonly property real pillH: Style.space(52)
+    readonly property real pillW: nt.iconOnly ? Style.space(44) : Style.space(112)
+    readonly property real pillH: nt.iconOnly ? Style.space(40) : Style.space(52)
 
     Item {
       id: ntBody
@@ -3165,12 +3181,16 @@ PanelWindow {
       Text {
         id: ntIcon
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.top: parent.top
+        // Icon-only: centre in the pill. Labelled: sit at the top above the
+        // label. Switching anchor modes here (rather than just hiding the text)
+        // keeps the icon optically centred instead of leaving it pinned high.
+        anchors.verticalCenter: nt.iconOnly ? parent.verticalCenter : undefined
+        anchors.top: nt.iconOnly ? undefined : parent.top
         anchors.topMargin: Style.space(9)
         text: nt.iconText
         color: nt.active ? root.accent : (nt.hovered ? root.fg : root.dim1)
         font.family: root.contentFontFamily
-        font.pixelSize: Style.font.heading
+        font.pixelSize: nt.iconOnly ? Style.font.subtitle : Style.font.heading
       }
 
       Rectangle {
@@ -3200,6 +3220,7 @@ PanelWindow {
         anchors.bottomMargin: Style.space(8)
         width: parent.width
         horizontalAlignment: Text.AlignHCenter
+        visible: !nt.iconOnly
         text: nt.label
         color: nt.active ? root.accent : (nt.hovered ? root.dim1 : root.dim2)
         font.family: root.contentFontFamily
@@ -5380,17 +5401,85 @@ PanelWindow {
     readonly property bool zoomed: viewStart >= 0 && viewEnd > viewStart
     readonly property real minZoomSpan: 15
 
+    // ---- Live tail -------------------------------------------------------
+    // The time domain ends at the wall clock rather than at the newest sample,
+    // so the plot translates continuously instead of jumping once per sample.
+    //
+    // Date.now() is NOT a QML dependency: a binding on it alone would freeze the
+    // instant the data stopped changing. heartbeat is read here purely to register
+    // that dependency — its animation rewrites the property every frame, so the
+    // binding re-evaluates at frame rate, while the VALUE comes straight from the
+    // wall clock. Same workaround as BarWidget's clockSec, but per-frame.
+    //
+    // Do NOT derive the fraction from the animation instead, i.e. do not write
+    // Math.floor(Date.now()/1000) + heartbeat. It looks equivalent but is wrong:
+    // an infinite NumberAnimation restarts at `from` each cycle, and Qt's frame
+    // timer drifts against real second boundaries, so the phase would snap back
+    // by up to a second every cycle and the domain would sawtooth instead of
+    // gliding. Reading the clock for the value makes drift impossible.
+    property real heartbeat: 0
+    NumberAnimation on heartbeat {
+      from: 0
+      to: 1
+      duration: 1000
+      loops: Animation.Infinite
+      // Stop while zoomed (the view is pinned to a chosen range) and whenever the
+      // graph isn't actually on screen. NB: hg.visible is NOT usable here — Item.visible
+      // reports only the locally-set value, and this graph has none, so it stays true
+      // even when the Activity page's `visible: root.activeTab === 0` is false. Test the
+      // real condition instead, or the loop repaints two hidden canvases at 60Hz forever.
+      running: !hg.zoomed && root.open && root.activeTab === 0
+    }
+    readonly property real liveNow: {
+      var tick = heartbeat   // read for dependency tracking only
+      return Date.now() / 1000
+    }
+
+    // Plot padding is shared by drawing and hit-testing. timeAtX() inverts the
+    // same mapping onPaint uses, and it used to work off the full width and
+    // ignore these 8px pads — a miss of up to ~12 minutes at the right edge of
+    // the 24h view, which is exactly where a live graph draws the eye (and where
+    // every tooltip and drill-down reads its timestamp from).
+    readonly property real leftPad: 8
+    readonly property real rightPad: 8
+    readonly property real plotW: Math.max(10, width - leftPad - rightPad)
+
+    // How far the live domain may outrun the newest sample. Healthy lag is one
+    // poll + roll-cache interval (a few tens of seconds); without a ceiling, a
+    // suspended machine or a stalled collector would slide every point off the
+    // left edge and the chart would render empty until an hour of fresh data
+    // accumulated.
+    readonly property real maxLiveGap: 120
+
     onWindowSecsChanged: resetView()
     onPtsChanged: requestPaint()
     onEventsChanged: requestPaint()
     onWidthChanged: requestPaint()
     onHeightChanged: requestPaint()
+    // The domain now advances on its own every frame while live, so these two
+    // are the handlers that actually drive the scroll. Without them the plot
+    // would only ever repaint when a new sample happened to land.
+    onDomStartChanged: requestPaint()
+    onDomEndChanged: requestPaint()
 
     function resetView() { viewStart = -1; viewEnd = -1; requestPaint() }
 
     function dataStart() { return hg.pts.length ? hg.pts[0].ts : 0 }
     function dataEnd() { return hg.pts.length ? hg.pts[hg.pts.length - 1].ts : 0 }
-    function fullEnd() { return hg.dataEnd() }
+    // Ends at the wall clock, but never behind the data: if the clock reads
+    // earlier than the newest sample (clock skew, a suspended machine) the max()
+    // keeps that sample inside the view instead of scrolling it off the right edge.
+    // Reading liveNow here is what puts it inside domEnd's binding dependency set,
+    // so every heartbeat frame re-evaluates domEnd -> onDomEndChanged ->
+    // requestPaint(). That chain is what makes the graph glide.
+    // The maxLiveGap ceiling keeps a stalled collector (or a clock jump after
+    // resume) from scrolling the whole plot out of view: past the ceiling the
+    // domain freezes at dataEnd + maxLiveGap instead of chasing "now".
+    function fullEnd() {
+      var de = hg.dataEnd()
+      if (de <= 0) return hg.liveNow
+      return Math.max(de, Math.min(hg.liveNow, de + hg.maxLiveGap))
+    }
     function fullStart() {
       var de = hg.fullEnd()
       if (de <= 0) return Math.floor(Date.now() / 1000) - hg.windowSecs
@@ -5404,12 +5493,13 @@ PanelWindow {
     // Property-backed forms of domainStart()/domainEnd() so external bindings
     // (e.g. the temperature strip) re-evaluate on zoom/pan instead of calling
     // the functions (function calls aren't tracked by the binding engine).
+    // These also carry the live scroll out to the temperature strip for free.
     readonly property real domStart: hg.zoomed ? hg.viewStart : hg.fullStart()
     readonly property real domEnd: hg.zoomed ? hg.viewEnd : hg.fullEnd()
 
     function timeAtX(x) {
       var s = hg.domainStart(), e = hg.domainEnd()
-      return s + (e - s) * x / Math.max(1, hg.width - 1)
+      return s + (e - s) * (x - hg.leftPad) / hg.plotW
     }
 
     function panBy(seconds) {
@@ -5468,9 +5558,17 @@ PanelWindow {
       // just INSIDE the plot with their guide running continuously down to the
       // curve — an earlier version floated the dot above the top gridline and
       // started the guide below it, which left a visible gap at the axis.
-      var topPad = 8, bottomPad = 18, leftPad = 8, rightPad = 8
-      var plotW = Math.max(10, w - leftPad - rightPad)
+      var topPad = 8, bottomPad = 18
+      var leftPad = hg.leftPad, rightPad = hg.rightPad
+      var plotW = hg.plotW
       var plotH = Math.max(10, h - bottomPad - topPad)
+      // Read the domain ONCE per repaint. onPaint used to call domainStart()
+      // inside every point loop, which meant several thousand Date.now() calls
+      // per frame at 60Hz, and meant ds / spanT / the axis labels / the event
+      // markers could each be taken from a slightly different instant — which
+      // quietly breaks the assumption that x is a function of a single span.
+      var sT = hg.domainStart(), eT = hg.domainEnd()
+      var spanT = Math.max(1, eT - sT)
       var yMax = hg.maxValue > 0 ? hg.maxValue : 10
       if (hg.maxValue < 0) {
         var mx = 0
@@ -5496,10 +5594,9 @@ PanelWindow {
 
       ctx.fillStyle = root.dim2
       ctx.textAlign = "center"
-      var sT = hg.domainStart(), eT = hg.domainEnd()
       var xTicks = 4
       for (var xi = 0; xi <= xTicks; xi++) {
-        var t = sT + (eT - sT) * xi / xTicks
+        var t = sT + spanT * xi / xTicks
         var tx = leftPad + plotW * xi / xTicks
         var label = hg.windowSecs >= 86400
             ? Qt.formatDateTime(new Date(t * 1000), "dd/MM HH:mm")
@@ -5508,20 +5605,25 @@ PanelWindow {
       }
 
       if (hg.pts.length < 2) return
-      var spanT = Math.max(1, hg.domainEnd() - hg.domainStart())
 
       // Subtle gradient fill under the curve (own closed path, so the stroke
       // below stays a crisp single line instead of a filled outline).
       ctx.beginPath()
       var fStarted = false
+      var lastFillX = leftPad
       for (var fi = 0; fi < hg.pts.length; fi++) {
         var fp = hg.pts[fi]
-        var fX = leftPad + (fp.ts - hg.domainStart()) / spanT * plotW
+        var fX = leftPad + (fp.ts - sT) / spanT * plotW
         var fY = topPad + plotH - Math.max(0, Math.min(yMax, fp.v)) / yMax * plotH
+        lastFillX = fX
         if (!fStarted) { ctx.moveTo(fX, fY); fStarted = true }
         else ctx.lineTo(fX, fY)
       }
-      ctx.lineTo(leftPad + plotW, topPad + plotH)
+      // Close at the LAST DATA POINT, not the right edge. The domain now ends at
+      // the wall clock, so there is normally a trailing gap between the newest
+      // sample and the plot edge; closing at the edge would smear the gradient
+      // under that empty gap and make the curve look like it reached "now".
+      ctx.lineTo(lastFillX, topPad + plotH)
       ctx.lineTo(leftPad, topPad + plotH)
       ctx.closePath()
       var grad = ctx.createLinearGradient(0, topPad, 0, topPad + plotH)
@@ -5535,7 +5637,7 @@ PanelWindow {
       var started = false
       for (var li = 0; li < hg.pts.length; li++) {
         var lp = hg.pts[li]
-        var lX = leftPad + (lp.ts - hg.domainStart()) / spanT * plotW
+        var lX = leftPad + (lp.ts - sT) / spanT * plotW
         var lY = topPad + plotH - Math.max(0, Math.min(yMax, lp.v)) / yMax * plotH
         if (!started) { ctx.moveTo(lX, lY); started = true }
         else ctx.lineTo(lX, lY)
@@ -5554,7 +5656,7 @@ PanelWindow {
         var hot = false
         for (var di = 0; di < hg.pts.length; di++) {
           var dpt = hg.pts[di]
-          var dX = leftPad + (dpt.ts - hg.domainStart()) / spanT * plotW
+          var dX = leftPad + (dpt.ts - sT) / spanT * plotW
           var dY = topPad + plotH - Math.max(0, Math.min(yMax, dpt.v)) / yMax * plotH
           if (dpt.v >= hg.dangerThreshold) {
             if (!hot) { ctx.beginPath(); ctx.moveTo(dX, dY); hot = true }
@@ -5575,11 +5677,10 @@ PanelWindow {
       //   * a small ringed dot below the axis that reads as a precise, quiet
       //     marker instead of a blunt shape sitting on the line.
       if (hg.events && hg.events.length) {
-        var eST = hg.domainStart(), eET = hg.domainEnd()
         for (var pi = 0; pi < hg.events.length; pi++) {
           var ev2 = hg.events[pi]
-          if (ev2.ts < eST || ev2.ts > eET) continue
-          var pinX = leftPad + (ev2.ts - eST) / spanT * plotW
+          if (ev2.ts < sT || ev2.ts > eT) continue
+          var pinX = leftPad + (ev2.ts - sT) / spanT * plotW
           var pinVal = -1
           for (var bi2 = 0; bi2 < hg.pts.length; bi2++) {
             if (hg.pts[bi2].ts <= ev2.ts) pinVal = hg.pts[bi2].v
@@ -5948,10 +6049,17 @@ PanelWindow {
     id: mo
     property var pts: []
     property var graph: null
+    // Without this the mini overview's sparkline is frozen whenever new samples
+    // arrive — its only repaint triggers were the zoom/pan Connections below, so
+    // it updated solely when you happened to scrub. On a live chart that meant the
+    // overview never actually tracked the data.
+    onPtsChanged: moCan.requestPaint()
 
     Canvas {
       id: moCan
       anchors.fill: parent
+      onWidthChanged: requestPaint()
+      onHeightChanged: requestPaint()
       onPaint: {
         var ctx = getContext("2d")
         ctx.reset()
