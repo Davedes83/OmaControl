@@ -4,6 +4,7 @@
   "name": "OmaControl",
   "version": "1.0.0",
   "author": "davedes",
+  "license": "MIT",
   "description": "Advanced task manager with historical resource monitoring, process enforcement, privacy alerts, and plain-language process identification",
   "kinds": ["bar-widget"],
   "entryPoints": {

@@ -14,6 +14,16 @@ import "Model.js" as Model
 // Apps (grouped by name with quick-action menus: terminate/suspend/resume/renice),
 // Alerts (threshold + runaway-process buckets with dismiss), Events (new-app and
 // spike feed with unread dots). Plus a compact/expand mode.
+//
+// Text safety: every Text item bound to a string that did not originate in this
+// file — /proc cmdlines, binary and cwd paths, usernames, systemd unit names,
+// .desktop names and descriptions, alert and event text — sets
+// `textFormat: Text.PlainText`. Qt's default is AutoText, so an untrusted
+// argument containing an <img src="https://…"> tag becomes a network request
+// that hands the viewer's IP address and viewing time to whoever wrote that
+// argument; another local user controls their own process command lines. No
+// label here needs rich text, so PlainText costs nothing visually. Keep new
+// untrusted bindings on PlainText.
 
 PanelWindow {
   id: root
@@ -1866,6 +1876,7 @@ PanelWindow {
                     Text {
                       width: parent.width - Style.space(120)
                       anchors.verticalCenter: parent.verticalCenter
+                      textFormat: Text.PlainText
                       text: modelData.pretty
                       color: root.fg
                       font.family: root.contentFontFamily
@@ -3331,6 +3342,7 @@ PanelWindow {
         color: root.avatarColor(ar.appName)
         Text {
           anchors.centerIn: parent
+          textFormat: Text.PlainText
           text: ar.appName.length > 0 ? ar.appName.charAt(0).toUpperCase() : "?"
           color: root.onColor(root.avatarColor(ar.appName))
           font.family: root.contentFontFamily
@@ -3369,6 +3381,7 @@ PanelWindow {
           id: arName
           width: parent.width
           elide: Text.ElideRight
+          textFormat: Text.PlainText
           text: (ar.hot ? "\uf071  " : "") + ar.appName
           // Name stays in the normal foreground; the run dot + CPU pill carry the
           // load signal so a verified app never reads red.
@@ -3381,6 +3394,7 @@ PanelWindow {
           visible: ar.arSub !== ""
           width: parent.width
           elide: Text.ElideRight
+          textFormat: Text.PlainText
           text: ar.arSub
           color: root.muted
           font.family: root.contentFontFamily
@@ -3682,6 +3696,7 @@ PanelWindow {
       anchors.right: dismissBtn.left
       anchors.rightMargin: Style.space(8)
       anchors.verticalCenter: parent.verticalCenter
+      textFormat: Text.PlainText
       text: alr.alert.msg || ""
       color: root.fg
       font.family: root.contentFontFamily
@@ -3821,6 +3836,7 @@ PanelWindow {
       anchors.topMargin: Style.space(5)
       height: Style.space(20)
       verticalAlignment: Text.AlignVCenter
+      textFormat: Text.PlainText
       text: (hasApp ? (event.app + " — ") : "") + (event.msg || "")
       color: root.fg
       font.family: root.contentFontFamily
@@ -4056,6 +4072,7 @@ PanelWindow {
             Text {
               width: parent.width
               elide: Text.ElideRight
+              textFormat: Text.PlainText
               text: edp.ev.app || "System"
               color: root.fg
               font.family: root.contentFontFamily
@@ -4065,6 +4082,7 @@ PanelWindow {
             Text {
               width: parent.width
               elide: Text.ElideRight
+              textFormat: Text.PlainText
               text: edp.ev.publisher || "Unknown"
               color: root.dim1
               font.family: root.contentFontFamily
@@ -4090,6 +4108,7 @@ PanelWindow {
         }
         Text {
           width: edpBody.width
+          textFormat: Text.PlainText
           text: edp.ev.msg || ""
           wrapMode: Text.WordWrap
           color: root.fg
@@ -4123,6 +4142,7 @@ PanelWindow {
             spacing: Style.space(4)
             Text {
               visible: edp.verifiedLine !== ""
+              textFormat: Text.PlainText
               text: edp.verifiedLine
               color: edp.ctxAppVerified ? root.ok : root.warn
               font.family: root.contentFontFamily
@@ -4131,6 +4151,7 @@ PanelWindow {
             }
             Text {
               visible: edp.ctxAppPublisher !== "" && edp.verifiedLine === ""
+              textFormat: Text.PlainText
               text: edp.ctxAppPublisher
               color: root.dim1
               font.family: root.contentFontFamily
@@ -4139,6 +4160,7 @@ PanelWindow {
             Text {
               visible: edp.appDesc !== ""
               width: edpBody.width - Style.space(22)
+              textFormat: Text.PlainText
               text: edp.appDesc
               wrapMode: Text.WordWrap
               color: root.dim1
@@ -4186,6 +4208,7 @@ PanelWindow {
         }
         Text {
           visible: edp.siblingsLine !== ""
+          textFormat: Text.PlainText
           text: edp.siblingsLine
           color: root.dim2
           font.family: root.contentFontFamily
@@ -4233,6 +4256,7 @@ PanelWindow {
               anchors.left: parent.left
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
               text: (evProc.isEvApp ? "\u25c9 " : "") + (modelData.name || "unknown")
               color: evProc.isEvApp ? root.accent : root.fg
               font.family: root.contentFontFamily
@@ -4443,6 +4467,7 @@ PanelWindow {
                                          : root.avatarColor((dp.app && dp.app.name) || "")
           Text {
             anchors.centerIn: parent
+            textFormat: Text.PlainText
             text: (dp.app && dp.app.name ? dp.app.name.charAt(0).toUpperCase() : "?")
             color: root.onColor(dp.app && dp.app.verified ? root.ok
                                                           : root.avatarColor((dp.app && dp.app.name) || ""))
@@ -4453,6 +4478,7 @@ PanelWindow {
         }
         Text {
           anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
           text: (dp.app && dp.app.name) || ""
           color: root.fg
           font.family: root.contentFontFamily
@@ -4489,6 +4515,7 @@ PanelWindow {
           Text {
             id: dpPermText
             anchors.centerIn: parent
+            textFormat: Text.PlainText
             text: (dp.app && dp.app.perms ? dp.app.perms : []).join(", ")
             color: root.urgent
             font.family: root.contentFontFamily
@@ -4506,6 +4533,7 @@ PanelWindow {
       anchors.leftMargin: Style.space(14)
       anchors.right: parent.right
       anchors.rightMargin: Style.space(14)
+      textFormat: Text.PlainText
       text: (dp.app && dp.app.source || "unknown")
           + "   ·   disabled: " + (dp.app && dp.app.disabled ? "yes" : "no")
           + "   ·   instances: " + (dp.app ? (dp.app.instances !== undefined ? dp.app.instances : (dp.app.pids ? dp.app.pids.length : 0)) : 0)
@@ -4522,6 +4550,7 @@ PanelWindow {
       anchors.leftMargin: Style.space(14)
       anchors.right: parent.right
       anchors.rightMargin: Style.space(14)
+      textFormat: Text.PlainText
       text: (dp.app && dp.app.desc && dp.app.desc.trim() !== "")
         ? dp.app.desc
         : ((dp.app && dp.app.exe) ? ("Binary: " + dp.app.exe + " — no description available.")
@@ -4558,6 +4587,7 @@ PanelWindow {
       Text {
         width: parent.width
         visible: dp.binaryPath() !== ""
+        textFormat: Text.PlainText
         text: dp.binaryPath()
         color: root.dim2
         font.family: root.contentFontFamily
@@ -4914,6 +4944,7 @@ PanelWindow {
                 Text {
                   id: dpStateText
                   anchors.centerIn: parent
+                  textFormat: Text.PlainText
                   text: modelData.state_label
                   color: modelData.state === "Z" ? root.urgent : root.dim1
                   font.family: root.contentFontFamily
@@ -4926,6 +4957,7 @@ PanelWindow {
                 anchors.right: dpMetrics.left
                 anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
                 text: modelData.user
                 color: root.dim1
                 font.family: root.contentFontFamily
@@ -4984,6 +5016,7 @@ PanelWindow {
                 anchors.right: dpReveal.visible ? dpReveal.left : parent.right
                 anchors.rightMargin: dpReveal.visible ? Style.space(6) : 0
                 anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
                 text: modelData.cmdline
                 // Tints and underlines on hover so the row reads as clickable
                 // (clicking opens this binary with the desktop default handler).
@@ -5018,6 +5051,7 @@ PanelWindow {
               anchors.rightMargin: Style.space(8)
               anchors.top: parent.top
               anchors.topMargin: Style.space(41)
+              textFormat: Text.PlainText
               text: {
                 var extra = []
                 if (modelData.threads > 1) extra.push(modelData.threads + " threads")
@@ -5324,6 +5358,7 @@ PanelWindow {
         color: pr.verified ? root.ok : root.avatarColor(pr.name)
         Text {
           anchors.centerIn: parent
+          textFormat: Text.PlainText
           text: pr.name.length > 0 ? pr.name.charAt(0).toUpperCase() : "?"
           color: root.onColor(pr.verified ? root.ok : root.avatarColor(pr.name))
           font.family: root.contentFontFamily
@@ -5348,6 +5383,7 @@ PanelWindow {
           id: prName
           width: parent.width
           elide: Text.ElideRight
+          textFormat: Text.PlainText
           text: pr.critical ? "\uf071  " + pr.name : pr.name
           // Load is signalled by the row tint and the CPU pill, not the name, so
           // a verified process never reads as "red/untrusted" just for running hot.
@@ -5360,6 +5396,7 @@ PanelWindow {
           visible: pr.prSub !== ""
           width: parent.width
           elide: Text.ElideRight
+          textFormat: Text.PlainText
           text: pr.prSub
           color: root.muted
           font.family: root.contentFontFamily
@@ -6134,6 +6171,7 @@ PanelWindow {
               color: root.avatarColor(modelData.name)
               Text {
                 anchors.centerIn: parent
+                textFormat: Text.PlainText
                 text: modelData.name.length > 0 ? modelData.name.charAt(0).toUpperCase() : "?"
                 color: root.onColor(root.avatarColor(modelData.name))
                 font.family: root.contentFontFamily
@@ -6147,6 +6185,7 @@ PanelWindow {
               anchors.right: tipPct.left
               anchors.rightMargin: Style.space(8)
               anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
               text: modelData.name
               color: Color.tooltip.text
               font.family: root.contentFontFamily
