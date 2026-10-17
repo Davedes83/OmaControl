@@ -4,6 +4,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -41,13 +42,13 @@ PanelWindow {
 
   // ---- Theme (follows the running Omarchy theme automatically) ----
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property color fg: Color.foreground
-  readonly property color bg: Color.background
-  readonly property color accent: Color.accent
-  readonly property color urgent: Color.urgent
-  readonly property color muted: Color.muted
-  readonly property color surface: Color.popups.background
-  readonly property color surfaceBorder: Color.popups.border
+  readonly property color fg: Commons.Color.foreground
+  readonly property color bg: Commons.Color.background
+  readonly property color accent: Commons.Color.accent
+  readonly property color urgent: Commons.Color.urgent
+  readonly property color muted: Commons.Color.muted
+  readonly property color surface: Commons.Color.popups.background
+  readonly property color surfaceBorder: Commons.Color.popups.border
   readonly property color dim1: Qt.darker(fg, 1.35)
   readonly property color dim2: Qt.darker(fg, 1.7)
   readonly property color accentSoft: Qt.rgba(accent.r, accent.g, accent.b, 0.14)
@@ -138,8 +139,8 @@ PanelWindow {
 
   // Border specs for the app's card + tooltip surfaces, resolved once from the
   // theme's [popups] / [tooltip] roles so they honor per-theme border styling.
-  readonly property var cardBorderSpec: Border.localOrSurfaceSpec("popups", "border", surfaceBorder, Color.popups.border, Math.max(1, Style.space(2)))
-  readonly property var tipBorderSpec: Border.localOrSurfaceSpec("tooltip", "border", Color.tooltip.border, Color.tooltip.border, Style.normalBorderWidth)
+  readonly property var cardBorderSpec: Border.localOrSurfaceSpec("popups", "border", surfaceBorder, Commons.Color.popups.border, Math.max(1, Style.space(2)))
+  readonly property var tipBorderSpec: Border.localOrSurfaceSpec("tooltip", "border", Commons.Color.tooltip.border, Commons.Color.tooltip.border, Style.normalBorderWidth)
 
   // ---- Data (DB snapshot via sample-json.sh) ----
   property var sample: ({ cpu: 0, mem: 0, gpu: 0, procs: 0, disk: 0, disk_r: 0, disk_w: 0,
@@ -1404,7 +1405,7 @@ PanelWindow {
   Rectangle {
     anchors.fill: parent
     z: 0
-    color: Color.menu.scrim
+    color: Commons.Color.menu.scrim
     TapHandler {
       onTapped: root.open = false
     }
@@ -3978,7 +3979,7 @@ PanelWindow {
 
     Rectangle {
       anchors.fill: parent
-      color: Color.menu.scrim
+      color: Commons.Color.menu.scrim
       MouseArea {
         anchors.fill: parent
         cursorShape: Qt.PointingHandCursor
@@ -6123,7 +6124,7 @@ PanelWindow {
       width: Style.space(250)
       implicitHeight: tipCol.implicitHeight + Style.space(16)
       radius: Style.cornerRadius
-      color: Color.tooltip.background
+      color: Commons.Color.tooltip.background
       borderSpec: root.tipBorderSpec
       property var tipRows: []
       property int tipTotal: 0
@@ -6140,7 +6141,7 @@ PanelWindow {
             id: tipTime
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            color: Qt.rgba(Color.tooltip.text.r, Color.tooltip.text.g, Color.tooltip.text.b, 0.75)
+            color: Qt.rgba(Commons.Color.tooltip.text.r, Commons.Color.tooltip.text.g, Commons.Color.tooltip.text.b, 0.75)
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
           }
@@ -6148,7 +6149,7 @@ PanelWindow {
             id: tipValue
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            color: Color.tooltip.text
+            color: Commons.Color.tooltip.text
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.subtitle
             font.bold: true
@@ -6187,7 +6188,7 @@ PanelWindow {
               anchors.verticalCenter: parent.verticalCenter
               textFormat: Text.PlainText
               text: modelData.name
-              color: Color.tooltip.text
+              color: Commons.Color.tooltip.text
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
               elide: Text.ElideRight
@@ -6197,7 +6198,7 @@ PanelWindow {
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               text: modelData.pctText
-              color: Color.tooltip.text
+              color: Commons.Color.tooltip.text
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
@@ -6211,7 +6212,7 @@ PanelWindow {
           text: tip.tipTotal > tip.tipRows.length
               ? "Click the graph to see " + (tip.tipTotal - tip.tipRows.length) + " others"
               : ""
-          color: Qt.rgba(Color.tooltip.text.r, Color.tooltip.text.g, Color.tooltip.text.b, 0.6)
+          color: Qt.rgba(Commons.Color.tooltip.text.r, Commons.Color.tooltip.text.g, Commons.Color.tooltip.text.b, 0.6)
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
