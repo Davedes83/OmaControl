@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -25,7 +26,7 @@ BarWidget {
   // window agree and both track the theme. Mirrors AppWindow's tinted().
   function tintedOk() {
     var base = Qt.rgba(0x3f / 255, 0xb9 / 255, 0x50 / 255, 1)
-    var accent = Color.accent
+    var accent = Commons.Color.accent
     var t = 0.22
     return Qt.rgba(base.r + (accent.r - base.r) * t,
                    base.g + (accent.g - base.g) * t,
@@ -33,10 +34,10 @@ BarWidget {
   }
   readonly property color bellColor: {
     switch (root.bellColorToken) {
-      case "danger": return root.bar && root.bar.urgent ? root.bar.urgent : Color.urgent
+      case "danger": return root.bar && root.bar.urgent ? root.bar.urgent : Commons.Color.urgent
       case "green": return root.tintedOk()
-      case "accent": return Color.accent
-      default: return root.bar && root.bar.foreground ? root.bar.foreground : Color.foreground
+      case "accent": return Commons.Color.accent
+      default: return root.bar && root.bar.foreground ? root.bar.foreground : Commons.Color.foreground
     }
   }
 
@@ -424,7 +425,7 @@ BarWidget {
     text: root.label
     fontSize: Style.font.caption
     active: root.alert || root.bellActive || root.stale
-    activeColor: (root.alert || root.stale) ? (root.bar && root.bar.urgent ? root.bar.urgent : Color.urgent) : root.bellColor
+    activeColor: (root.alert || root.stale) ? (root.bar && root.bar.urgent ? root.bar.urgent : Commons.Color.urgent) : root.bellColor
     tooltipText: {
       if (!root.ready) return "OmaControl — loading..."
       var d = root.lastData || {}
