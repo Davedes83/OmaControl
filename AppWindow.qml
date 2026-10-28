@@ -5719,6 +5719,11 @@ PanelWindow {
 
     function resetView() { viewStart = -1; viewEnd = -1; requestPaint() }
 
+    function hitResetPill(x, y) {
+      return hg.zoomed && x >= hg.pillX && x <= hg.pillX + hg.pillW &&
+             y >= hg.pillY && y <= hg.pillY + hg.pillH
+    }
+
     function dataStart() { return hg.pts.length ? hg.pts[0].ts : 0 }
     function dataEnd() { return hg.pts.length ? hg.pts[hg.pts.length - 1].ts : 0 }
     // Ends at the wall clock, but never behind the data: if the clock reads
@@ -5992,6 +5997,13 @@ PanelWindow {
       // Drag-to-select band. Soft vertical gradient with brighter edges rather than
       // a flat fill inside a hard square outline, so the selection reads as a
       // deliberate region instead of a debugging rectangle.
+      // Reset pill bounds when not zoomed
+      if (!hg.zoomed) {
+        hg.pillX = -1
+        hg.pillY = -1
+        hg.pillW = 0
+        hg.pillH = 0
+      }
       if (dragStart >= 0 && !hg.zoomed) {
         var bX = Math.min(dragStart, dragCur)
         var bW = Math.abs(dragCur - dragStart)
@@ -6022,6 +6034,11 @@ PanelWindow {
         // Sits below the marker lane so it never collides with a marker dot or the
         // top gridline value.
         var pX = leftPad, pY = topPad + 20, pH = 17, pW = tw + 16
+        // Store pill bounds for hit-testing
+        hg.pillX = pX
+        hg.pillY = pY
+        hg.pillW = pW
+        hg.pillH = pH
         ctx.beginPath()
         if (ctx.roundRect) {
           ctx.roundRect(pX, pY, pW, pH, pH / 2)
@@ -6049,6 +6066,11 @@ PanelWindow {
     property real dragCur: -1
     property bool dragMoved: false
     property real hoverPointerX: -1
+    // Reset pill bounds (updated during paint when zoomed)
+    property real pillX: -1
+    property real pillY: -1
+    property real pillW: 0
+    property real pillH: 0
     signal rangeSelected(real t1, real t2)
 
     MouseArea {
@@ -6102,7 +6124,11 @@ PanelWindow {
           hg.dragMoved = false
           hg.requestPaint()
         } else {
-          if (hg.dataEnd() > 0) hg.drilled(hg.timeAtX(mouse.x))
+          if (hg.zoomed && hg.hitResetPill(mouse.x, mouse.y)) {
+            hg.resetView()
+          } else if (hg.dataEnd() > 0) {
+            hg.drilled(hg.timeAtX(mouse.x))
+          }
         }
       }
       onDoubleClicked: hg.resetView()
